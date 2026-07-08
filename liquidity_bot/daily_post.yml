@@ -1,0 +1,43 @@
+name: Daily Liquidity Summary Post
+
+on:
+  schedule:
+    # UTC 기준. 한국시간(KST) 오전 9시 = UTC 전날 00:00
+    # (GitHub Actions는 트래픽이 몰리는 정각에 최대 수십 분 지연될 수 있어
+    #  '9시 5분'처럼 애매한 분으로 걸어두는 것을 권장합니다)
+    - cron: '5 0 * * *'
+  workflow_dispatch: {}   # Actions 탭에서 수동으로도 즉시 실행 가능
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: 저장소 체크아웃
+        uses: actions/checkout@v4
+
+      - name: 파이썬 설치
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 일일 게시 스크립트 실행
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          SITE_API_BASE: ${{ secrets.SITE_API_BASE }}
+        run: python daily_post.py
+
+      - name: 생성된 카드 이미지 업로드 (디버깅용, 7일 보관)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: summary-card
+          path: output/summary_card.png
+          retention-days: 7
+          if-no-files-found: ignore
