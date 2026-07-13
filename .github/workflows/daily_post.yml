@@ -1,1 +1,53 @@
+name: Daily Liquidity Bot Post
+
+on:
+  schedule:
+    - cron: '5 0 * * *'   # 00:05 UTC every day; the script itself decides which day-of-week branch to run
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # needed so the bot can commit generated card images for Threads image posts
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily post script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          SITE_API_BASE: ${{ secrets.SITE_API_BASE }}
+          SITE_URL: ${{ secrets.SITE_URL }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GH_BRANCH: ${{ github.ref_name }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}          # "gemini" or "openai"
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python daily_post.py
+
+      - name: Upload generated images (debugging, 7-day retention)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daily-cards
+          path: output/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
