@@ -2,11 +2,11 @@ name: Daily Liquidity Bot Post
 
 on:
   schedule:
-    - cron: '5 0 * * *'   # 00:05 UTC every day; the script itself decides which day-of-week branch to run
+    - cron: '5 0 * * *'
   workflow_dispatch: {}
 
 permissions:
-  contents: write   # needed so the bot can commit generated card images for Threads image posts
+  contents: write
 
 jobs:
   post:
@@ -37,7 +37,7 @@ jobs:
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           GH_REPO: ${{ github.repository }}
           GH_BRANCH: ${{ github.ref_name }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}          # "gemini" or "openai"
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python daily_post.py
@@ -50,4 +50,3 @@ jobs:
           path: output/*.png
           retention-days: 7
           if-no-files-found: ignore
-
