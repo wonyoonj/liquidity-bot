@@ -14,10 +14,13 @@ a human to grant OAuth consent once; this cannot be skipped or automated):
 After that, everything below runs with zero human interaction — including
 refreshing the token before it expires (see refresh_and_store_token()).
 
-Threads API limitations (as of 2026):
-    - No native poll endpoint. Text/image/video/carousel only.
+Threads API notes (confirmed against Meta's official changelog, checked July 2026):
+    - Native polls ARE supported (added April 14, 2025) via the `poll_attachment`
+      parameter on a TEXT container — see publish_poll_post() below. 2-4 options,
+      not compatible with a link_attachment on the same post.
     - Image/video posts require a PUBLICLY reachable URL (can't upload raw bytes),
-      so this module defaults to TEXT-only posts to avoid needing image hosting.
+      so this module defaults to TEXT-only posts to avoid needing image hosting
+      unless an image_url is supplied.
 """
 from __future__ import annotations
 
@@ -110,6 +113,52 @@ def publish_image_post(text: str, image_url: str, timeout: int = 30) -> dict:
         publish_resp.raise_for_status()
     except requests.RequestException as e:
         raise ThreadsError(f"Failed to publish Threads image post: {e} / {publish_resp.text}") from e
+
+    return publish_resp.json()
+
+
+def publish_poll_post(text: str, options: list[str], timeout: int = 30) -> dict:
+    """Native Threads poll (poll_attachment param, added to the API April 2025).
+    Requires 2-4 options; only the first 4 are used if more are passed, and
+    each option is trimmed to Threads' poll option length limit."""
+    if len(options) < 2:
+        raise ThreadsError("Threads polls need at least 2 options.")
+
+    user_id, access_token = _get_credentials()
+    keys = ["option_a", "option_b", "option_c", "option_d"]
+    poll_attachment = {k: opt[:25] for k, opt in zip(keys, options[:4])}
+
+    import json
+    create_resp = requests.post(
+        f"{THREADS_API_BASE}/{user_id}/threads",
+        data={
+            "media_type": "TEXT",
+            "text": text[:500],
+            "poll_attachment": json.dumps(poll_attachment),
+            "access_token": access_token,
+        },
+        timeout=timeout,
+    )
+    try:
+        create_resp.raise_for_status()
+    except requests.RequestException as e:
+        raise ThreadsError(f"Failed to create Threads poll container: {e} / {create_resp.text}") from e
+
+    creation_id = create_resp.json().get("id")
+    if not creation_id:
+        raise ThreadsError(f"No container id returned: {create_resp.text}")
+
+    time.sleep(2)
+
+    publish_resp = requests.post(
+        f"{THREADS_API_BASE}/{user_id}/threads_publish",
+        data={"creation_id": creation_id, "access_token": access_token},
+        timeout=timeout,
+    )
+    try:
+        publish_resp.raise_for_status()
+    except requests.RequestException as e:
+        raise ThreadsError(f"Failed to publish Threads poll: {e} / {publish_resp.text}") from e
 
     return publish_resp.json()
 

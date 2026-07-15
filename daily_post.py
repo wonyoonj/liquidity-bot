@@ -73,7 +73,7 @@ from lib.generate_card import (
     create_fact_card,
 )
 from lib.post_telegram import send_photo, send_text, send_poll, TelegramError
-from lib.post_threads import publish_text_post, publish_image_post, ThreadsError
+from lib.post_threads import publish_text_post, publish_image_post, publish_poll_post, ThreadsError
 from lib.github_image_host import publish_image_to_repo, ImageHostError
 from lib.terms import get_term_of_the_day, format_term_caption
 from lib.polls import pick_open_question_for_sunday, GENERIC_LIQUIDITY_POLLS
@@ -230,9 +230,17 @@ def run_sunday_engagement() -> int:
     send_text(f"💬 <b>This Week's Question</b>\n\n{question}")
     send_poll(question, options)
 
-    print("[2/2] Mirroring to Threads (LLM-phrased open question)...")
-    threads_question = generate_open_question("this week's liquidity conditions")
-    _mirror_to_threads(threads_question)
+    print("[2/2] Mirroring to Threads as a NATIVE poll (Threads API added poll "
+          "support in April 2025 — poll_attachment param; see lib/post_threads.py)...")
+    if os.environ.get("THREADS_USER_ID") and os.environ.get("THREADS_ACCESS_TOKEN"):
+        try:
+            publish_poll_post(f"💬 {question}", options)
+            print("[Threads] Native poll posted successfully.")
+        except ThreadsError as e:
+            print(f"[Threads] Native poll failed, falling back to text: {e}", file=sys.stderr)
+            _mirror_to_threads(f"💬 {question}\n(Reply with your take!)")
+    else:
+        print("[Threads] Not configured, skipping mirror post.")
 
     print("Done! (Sunday engagement)")
     return 0

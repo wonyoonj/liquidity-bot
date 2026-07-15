@@ -43,7 +43,7 @@ so it doesn't look stale if someone sees it a few days after posting.
 | Monday | **Weekly Liquidity Result** — speedometer gauge + 1W/4W/13W/26W/52W % change strip + the top-2 drivers behind this week's number | Telegram (photo), Threads (text+image) | 14:00 (~10am ET) |
 | Wednesday | **Knowledge post** — rotates weekly between a liquidity-indicator concept (TGA / Fed balance sheet / RRP / bank reserves) and a rate concept (Fed Funds / 10Y / 2Y / 10Y-2Y spread / SOFR), each with its own 52-week chart | Telegram (photo), Threads (text+image) | 15:00 (~11am ET) |
 | Friday | Term of the Day — rotating finance glossary | Telegram (text+photo), Threads (text+image) | 16:00 (~12pm ET) |
-| Sunday | Community engagement — generic opinion poll | Telegram (text+poll), Threads (text+LLM open question) | 18:00 (~2pm ET) |
+| Sunday | Community engagement — generic opinion poll | Telegram (native poll), Threads (native poll) | 18:00 (~2pm ET) |
 | Tue / Thu / Sat | No scheduled main post | — | 14:00 (urgent scan only) |
 | **Any day** | **Unified urgent scanner** — scans EVERY monitored series (all 4 liquidity components + all 5 rate series + the combined net-flow metric) for the single most notable record / streak / turning-point / big-move signal, and posts it immediately, independent of the schedule above. Posts nothing if nothing is genuinely notable (quality over forced volume). | Telegram + Threads | Checked on every scheduled run |
 
@@ -69,10 +69,11 @@ data for it until you fix the code to match.
 **Telegram: yes, 100%, including polls.** `sendPoll` is a first-class Bot API
 endpoint — no special permission needed beyond the bot being a channel admin.
 
-**Threads: yes, for text/image posts — but two caveats:**
-1. **Polls are not supported by the Threads API at all** (as of 2026, it's
-   text/image/video/carousel only). That's why Threads gets an "open question"
-   version instead of a real poll widget.
+**Threads: yes, for text/image posts AND native polls — one caveat:**
+1. **Native polls ARE supported** (Meta added `poll_attachment` support to
+   the Threads API in April 2025 — confirmed against Meta's official
+   changelog). `lib/post_threads.py` → `publish_poll_post()` posts a real
+   Threads poll widget (2-4 options) on Sunday, not a text workaround.
 2. **One-time manual OAuth setup is unavoidable** (Meta requires a human to
    click "Allow" once — there's no way around this for any Meta product).
    After that one-time setup, `refresh_threads_token.py` keeps the access
