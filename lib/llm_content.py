@@ -116,6 +116,37 @@ def generate_angle_commentary(metrics: dict, angle: str | None = None) -> str:
         return _fallback_sentence(metrics, angle)
 
 
+def generate_fact_caption(fact_text: str, ticker: str, current_value: float, unit: str,
+                            site_url: str) -> str:
+    """Barchart-style single-fact caption. The fact itself (fact_text) is
+    already numerically grounded and deterministic (see signal_scanner.py) —
+    the LLM's only job is to rephrase it into a punchier, more natural-sounding
+    single sentence, in the terse 'headline + emoji' style, NOT to add new
+    claims or explanation. Falls back to the raw fact_text unmodified if the
+    LLM is unavailable, which is already a perfectly usable caption on its own."""
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    prompt = (
+        "Rewrite the following financial fact as ONE punchy headline-style sentence "
+        "for a social media post, in the terse style of accounts like Barchart "
+        "(e.g. 'META just closed above its 200-day moving average for the longest "
+        "stretch since February'). Rules: under 180 characters, plain text, no "
+        "markdown, at most 1-2 emoji used sparingly for emphasis (not decoration), "
+        "state the fact directly with NO explanation of why it matters and NO "
+        "hedging language. Do not invent any numbers not present in the input.\n\n"
+        f"Fact: {fact_text}\n"
+        f"Ticker: ${ticker}\n"
+        f"Current value: {current_value} {unit}\n\n"
+        "Output only the rewritten sentence, nothing else."
+    )
+    try:
+        caller = _call_openai if provider == "openai" else _call_gemini
+        headline = caller(prompt)
+    except Exception:
+        headline = fact_text  # the deterministic fact is already a valid caption on its own
+
+    return f"{headline}\n\n👉 {site_url}\n#USLiquidity #{ticker} #FederalReserve"
+
+
 def generate_open_question(indicator_label: str, context_note: str = "") -> str:
     """Idea #10: an open opinion question about a specific liquidity indicator,
     for Sunday content / Threads engagement posts."""

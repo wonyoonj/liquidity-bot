@@ -120,6 +120,58 @@ def compute_trend_text(data_store: dict, current_result: dict) -> str:
         return ""
 
 
+GAUGE_MIN = -150.0   # net_market_flow value mapped to the far-left (full drain) needle position
+GAUGE_MAX = 150.0    # net_market_flow value mapped to the far-right (full supply) needle position
+
+# Windows shown on the Monday "speedometer" card: (label, weeks)
+CHANGE_WINDOWS = [("1W", 1), ("4W", 4), ("13W", 13), ("26W", 26), ("52W", 52)]
+
+
+def compute_gauge_angle(net_market_flow: float) -> float:
+    """Maps net_market_flow to a -90..+90 degree needle angle (like the site's
+    speedometer widget), clamped at the extremes."""
+    clamped = max(GAUGE_MIN, min(GAUGE_MAX, net_market_flow))
+    fraction = (clamped - GAUGE_MIN) / (GAUGE_MAX - GAUGE_MIN)  # 0..1
+    return -90.0 + fraction * 180.0
+
+
+def compute_window_changes(data_store: dict) -> List[Dict]:
+    """For each window in CHANGE_WINDOWS, compares the sum of net_market_flow
+    over the trailing N weeks to the N weeks immediately before that, and
+    expresses it as a % change — i.e. 'is liquidity supply pace speeding up
+    or slowing down' over each horizon (1W/4W/13W/26W/52W), mirroring the
+    site's multi-window % change readout."""
+    history = compute_net_market_flow_history(data_store, weeks=105)  # enough for a 52W-vs-prior-52W compare
+    values = [h["net_market_flow"] for h in history]
+
+    results = []
+    for label, n in CHANGE_WINDOWS:
+        if len(values) < n * 2:
+            results.append({"label": label, "pct": None})
+            continue
+        recent_sum = sum(values[-n:])
+        prior_sum = sum(values[-2 * n:-n])
+        if abs(prior_sum) < 1e-6:
+            pct = None
+        else:
+            pct = (recent_sum - prior_sum) / abs(prior_sum) * 100.0
+        results.append({"label": label, "pct": round(pct, 1) if pct is not None else None})
+    return results
+
+
+def compute_top_drivers(result: dict, top_n: int = 2) -> List[Dict]:
+    """Returns the top_n biggest contributors to this week's net_market_flow,
+    each with a plain-language label and its signed B$/Week contribution —
+    used for the Monday 'why is liquidity like this' explanation."""
+    contributions = {
+        "Treasury's TGA balance": -result["tga_diff"],
+        "the Fed's balance sheet / bank reserves": result["fed_liquidity_diff"],
+        "Money Market Fund flows": result["final_mmf_to_market_diff"],
+    }
+    ranked = sorted(contributions.items(), key=lambda kv: abs(kv[1]), reverse=True)
+    return [{"label": label, "value": round(val, 1)} for label, val in ranked[:top_n]]
+
+
 def compute_net_market_flow_history(data_store: dict, weeks: int = 12) -> List[Dict]:
     """Walk back week-by-week from the latest common date and compute net_market_flow
     for each point. Used for the Friday recap chart and Sunday 'record' content."""

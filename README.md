@@ -18,27 +18,51 @@ liquidity_bot/
 │   ├── post_telegram.py              # text / photo / native poll
 │   ├── post_threads.py               # Threads text/image posting + token refresh
 │   ├── github_secrets.py             # self-updates GitHub Secrets (for token refresh)
-│   ├── fetch_calendar.py             # FRED official release calendar
-│   ├── terms.py                      # Saturday glossary content
-│   ├── story.py                      # Sunday record/streak narrative
-│   ├── triggers.py                   # streak / record / turning-point alerts (any day)
-│   ├── polls.py                      # poll question bank (calendar-matched + generic)
+│   ├── fetch_calendar.py             # FRED official release calendar (optional use)
+│   ├── terms.py                      # Friday glossary content
+│   ├── knowledge_content.py          # Wednesday liquidity/rate concept rotation
+│   ├── signal_scanner.py             # unified any-day urgent scanner (liquidity+rates+combined)
+│   ├── triggers.py                   # superseded — folded into signal_scanner.py, kept for reference
+│   ├── story.py                      # unused by the current schedule, kept for reference
+│   ├── polls.py                      # poll question bank (Sunday engagement)
 │   └── llm_content.py                # Gemini/OpenAI commentary, with safe fallback
 └── .github/workflows/
     ├── daily_post.yml                 # runs daily_post.py every day
     └── refresh_threads_token.yml      # runs refresh_threads_token.py weekly
 ```
 
-## Content rotation
+## Content rotation (redesigned)
 
-| Day | Content | Platforms |
-|---|---|---|
-| Monday | This week's major US econ releases (CPI/NFP/FOMC/GDP/PCE) via FRED's official calendar API, plus a poll matched to whichever event is on the calendar | Telegram (text+poll), Threads (text+open question) |
-| Tue-Thu | Daily snapshot card, with an LLM-generated "angle" line (comparison / record / cause / question / warning — picked at random) so the same number never reads the same way twice | Telegram (photo), Threads (text) |
-| Friday | Weekly recap bar chart (last 8 weeks) | Telegram (photo), Threads (text) |
-| Saturday | Term of the Day — rotating finance glossary, no data fetch needed | Telegram (text), Threads (text) |
-| Sunday | "This week by the numbers" record/streak story + a generic opinion poll | Telegram (text+poll), Threads (text+LLM open question) |
-| **Any day** | Streak alert (4+ consecutive weeks same direction), record alert (26-week high/low), and turning-point alert (direction flip) — checked on every run and posted immediately if triggered | Telegram + Threads |
+Liquidity numbers now post **once a week only** (Monday) — no more repeat
+daily snapshots that made back-to-back posts feel like the same content
+twice. The Monday card also has **no date/"updated" text** on it by design,
+so it doesn't look stale if someone sees it a few days after posting.
+
+| Day | Content | Platforms | Approx. post time (UTC) |
+|---|---|---|---|
+| Monday | **Weekly Liquidity Result** — speedometer gauge + 1W/4W/13W/26W/52W % change strip + the top-2 drivers behind this week's number | Telegram (photo), Threads (text+image) | 14:00 (~10am ET) |
+| Wednesday | **Knowledge post** — rotates weekly between a liquidity-indicator concept (TGA / Fed balance sheet / RRP / bank reserves) and a rate concept (Fed Funds / 10Y / 2Y / 10Y-2Y spread / SOFR), each with its own 52-week chart | Telegram (photo), Threads (text+image) | 15:00 (~11am ET) |
+| Friday | Term of the Day — rotating finance glossary | Telegram (text+photo), Threads (text+image) | 16:00 (~12pm ET) |
+| Sunday | Community engagement — generic opinion poll | Telegram (text+poll), Threads (text+LLM open question) | 18:00 (~2pm ET) |
+| Tue / Thu / Sat | No scheduled main post | — | 14:00 (urgent scan only) |
+| **Any day** | **Unified urgent scanner** — scans EVERY monitored series (all 4 liquidity components + all 5 rate series + the combined net-flow metric) for the single most notable record / streak / turning-point / big-move signal, and posts it immediately, independent of the schedule above. Posts nothing if nothing is genuinely notable (quality over forced volume). | Telegram + Threads | Checked on every scheduled run |
+
+Posting times are chosen within the commonly-cited "best time to post"
+window for Western/English-speaking audiences (roughly 9am-1pm ET on
+weekdays), spread across Monday/Wednesday/Friday/Sunday so the four
+mandatory posts don't cluster together. See `.github/workflows/daily_post.yml`
+for the exact cron entries — adjust freely, and note UTC cron times drift by
+an hour relative to US Eastern Time across Daylight Saving transitions.
+
+### Rate indicators — confirm before going live
+
+The Wednesday rate-topic rotation and the urgent scanner's rate coverage
+pull `DFF`, `DGS10`, `DGS2`, `T10Y2Y`, `SOFR` via your site's existing
+`get-csv-data` endpoint (see `lib/fetch_data.py` → `OPTIONAL_RATE_INDICATORS`).
+**Confirm these indicator codes actually match what your site's rates page
+supports** — if a code isn't supported, it's skipped automatically (never
+breaks the pipeline), but the rate-topic rotation/scanning just won't have
+data for it until you fix the code to match.
 
 ## Can this really run with zero manual work?
 

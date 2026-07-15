@@ -22,6 +22,16 @@ REQUIRED_INDICATORS = [
     "MMF2MARKET", "MMF2GOVERNMENT", "MMMFFAQ027S",
 ]
 
+# Rate indicators shown on the site's "금리" (rates) page. These are OPTIONAL —
+# fetch_all() will not fail if any of these are missing/unsupported by your
+# Netlify endpoint. Used by: (1) the Wednesday knowledge rotation, and
+# (2) the "any day" urgent scanner, so both can cover rates, not just liquidity.
+# NOTE: confirm these indicator codes actually match what your site's
+# get-csv-data function supports (these are the standard FRED series IDs —
+# Fed Funds Rate, 10Y Treasury, 2Y Treasury, 10Y-2Y curve spread, SOFR).
+# Add/remove/rename freely to match your rates page.
+OPTIONAL_RATE_INDICATORS = ["DFF", "DGS10", "DGS2", "T10Y2Y", "SOFR"]
+
 
 class FetchError(RuntimeError):
     pass
@@ -76,8 +86,18 @@ def fetch_indicator(indicator: str, timeout: int = 20) -> List[Tuple[datetime, f
     return data
 
 
-def fetch_all() -> dict:
+def fetch_all(include_rates: bool = True) -> dict:
     data_store = {}
     for indicator in REQUIRED_INDICATORS:
         data_store[indicator] = fetch_indicator(indicator)
+
+    if include_rates:
+        for indicator in OPTIONAL_RATE_INDICATORS:
+            try:
+                data_store[indicator] = fetch_indicator(indicator)
+            except FetchError as e:
+                # Optional — a missing/unsupported rate series should never
+                # break the core liquidity pipeline.
+                print(f"[fetch_data] Optional rate series '{indicator}' unavailable, skipping: {e}")
+
     return data_store

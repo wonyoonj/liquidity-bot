@@ -1,9 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-Detects "event-triggered" conditions worth an immediate, off-schedule post
-(ideas #3 and #6): streaks and record highs/lows. Pure computation over the
-history list already produced by compute_net_market_flow_history() — no new
-data source needed.
+SUPERSEDED — this logic has been folded into lib/signal_scanner.py's
+_scan_combined_metric(), which now competes on the same priority scale as
+every individual liquidity/rate series (per the "urgent monitoring should
+cover everything, not just liquidity" redesign). daily_post.py no longer
+calls this module directly. Left in place for reference / in case you want
+to call check_triggers() standalone somewhere.
+
+Detects "event-triggered" conditions worth an immediate, off-schedule post:
+streaks and record highs/lows. Pure computation over the history list
+already produced by compute_net_market_flow_history() — no new data source
+needed.
 """
 from __future__ import annotations
 

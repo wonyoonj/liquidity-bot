@@ -60,6 +60,41 @@ def build_story_caption(history: List[Dict], site_url: str) -> str:
     return "\n".join(lines)
 
 
+def get_story_headline(history: List[Dict]) -> Dict[str, str]:
+    """Short headline + sub-line pair for the Sunday story CARD (separate from
+    the longer Telegram/Threads text caption built by build_story_caption)."""
+    if not history:
+        return {"headline": "This Week in US Liquidity", "sub_line": "Not enough data yet."}
+
+    current = history[-1]
+    current_val = current["net_market_flow"]
+    n_weeks = len(history)
+    values = [h["net_market_flow"] for h in history]
+    rank_desc = sorted(values, reverse=True)
+    rank_asc = sorted(values)
+    supply_rank = rank_desc.index(current_val) + 1
+    drain_rank = rank_asc.index(current_val) + 1
+    streak = _current_streak(values)
+
+    if supply_rank == 1:
+        headline = f"Strongest supply week in {n_weeks} weeks"
+    elif drain_rank == 1:
+        headline = f"Strongest drain week in {n_weeks} weeks"
+    elif supply_rank <= max(3, n_weeks // 10):
+        headline = f"#{supply_rank} strongest supply week of the last {n_weeks}"
+    elif drain_rank <= max(3, n_weeks // 10):
+        headline = f"#{drain_rank} strongest drain week of the last {n_weeks}"
+    else:
+        headline = "This Week in US Liquidity"
+
+    sub_line = ""
+    if streak["length"] >= 3:
+        direction_word = "supply" if streak["direction"] > 0 else "drain"
+        sub_line = f"Week {streak['length']} of a continuous liquidity {direction_word} streak."
+
+    return {"headline": headline, "sub_line": sub_line}
+
+
 def _current_streak(values: List[float]) -> Dict:
     """Length of the current consecutive run of same-sign values, ending at the last entry."""
     if not values:
