@@ -2,11 +2,23 @@ name: Daily Liquidity Bot Post
 
 on:
   schedule:
-    - cron: '5 0 * * *'
+    # Each entry just runs daily_post.py — the script auto-detects the
+    # current UTC weekday and dispatches accordingly (see daily_post.py).
+    # Times are chosen within the commonly-cited "best time to post" window
+    # for Western/English-speaking audiences (~9am-1pm ET on weekdays), and
+    # spread across different days so the 4 scheduled posts don't cluster.
+    # NOTE: UTC cron times drift by 1 hour relative to US Eastern Time across
+    # Daylight Saving transitions (mid-March / early November) — nudge by an
+    # hour then if you want to correct for it.
+    - cron: '0 14 * * 1'     # Monday    14:00 UTC (~10am ET)  -> Liquidity result
+    - cron: '0 15 * * 3'     # Wednesday 15:00 UTC (~11am ET)  -> Knowledge rotation
+    - cron: '0 16 * * 5'     # Friday    16:00 UTC (~12pm ET)  -> Term of the Day
+    - cron: '0 18 * * 0'     # Sunday    18:00 UTC (~2pm ET)   -> Community engagement poll
+    - cron: '0 14 * * 2,4,6' # Tue/Thu/Sat 14:00 UTC           -> urgent scanner only (no scheduled post)
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: write   # needed so the bot can commit generated card images for Threads image posts
 
 jobs:
   post:
@@ -37,7 +49,7 @@ jobs:
           THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
           GH_REPO: ${{ github.repository }}
           GH_BRANCH: ${{ github.ref_name }}
-          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}          # "gemini" or "openai"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python daily_post.py
@@ -50,3 +62,4 @@ jobs:
           path: output/*.png
           retention-days: 7
           if-no-files-found: ignore
+
