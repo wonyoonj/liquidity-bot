@@ -1,163 +1,422 @@
-# US Liquidity Bot — Full Content Rotation + Polls + Threads + LLM Commentary
+# -*- coding: utf-8 -*-
+"""
+Main script, run once per day (see .github/workflows/daily_post.yml).
 
-Automates daily posting to Telegram (and optionally Threads) with a
-day-of-week content rotation designed to keep people coming back, plus
-event-triggered alerts that fire the moment something noteworthy happens.
+CONTENT ROTATION (redesigned):
+    Monday    : Weekly Liquidity Result — speedometer gauge + 1W-52W % change
+                strip + the top-2 drivers behind this week's number. NO date/
+                "updated" text on the card by design (evergreen, not stale-
+                looking). Posted once a week only — no repeat daily snapshot.
+    Tuesday   : This month's major US econ release calendar (FRED official
+                Release Calendar API) — CPI/NFP/FOMC/GDP/PCE dates for the
+                current calendar month, past events marked done.
+    Wednesday : Knowledge post — rotates weekly between a liquidity-indicator
+                concept (TGA / Fed balance sheet / RRP / bank reserves) and a
+                rate concept (Fed Funds / 10Y / 2Y / curve spread / SOFR),
+                each shown with a 52-week (or max available) chart and a
+                plain-language explainer of how it connects to liquidity.
+    Friday    : Term of the Day (finance glossary) — light, distinct content
+                that doesn't repeat the liquidity number.
+    Sunday    : Community engagement — native poll on both Telegram and
+                Threads (Threads added poll_attachment support April 2025).
+    Thu/Sat   : No scheduled main post — the urgent scanner below still runs.
+    Always    : Unified urgent scanner (lib/signal_scanner.py) — scans EVERY
+                monitored series (liquidity + rates + the combined net-flow
+                metric) for the single most notable record/streak/turning-
+                point/big-move signal, and posts it immediately, independent
+                of the weekday schedule above. Posts nothing if nothing is
+                genuinely notable that day (quality over forced volume).
 
-```
-liquidity_bot/
-├── daily_post.py                    # main dispatcher (runs daily via GitHub Actions)
-├── refresh_threads_token.py         # keeps the Threads token alive with zero manual work
-├── requirements.txt
-├── .env.example
-├── fonts/                           # Inter (Latin) + NanumGothic bundled
-├── lib/
-│   ├── fetch_data.py                 # site's own Netlify data source
-│   ├── compute_liquidity.py          # net liquidity formula + history builder
-│   ├── generate_card.py              # snapshot + weekly recap card images
-│   ├── post_telegram.py              # text / photo / native poll
-│   ├── post_threads.py               # Threads text/image posting + token refresh
-│   ├── github_secrets.py             # self-updates GitHub Secrets (for token refresh)
-│   ├── fetch_calendar.py             # FRED official release calendar (optional use)
-│   ├── terms.py                      # Friday glossary content
-│   ├── knowledge_content.py          # Wednesday liquidity/rate concept rotation
-│   ├── signal_scanner.py             # unified any-day urgent scanner (liquidity+rates+combined)
-│   ├── triggers.py                   # superseded — folded into signal_scanner.py, kept for reference
-│   ├── story.py                      # unused by the current schedule, kept for reference
-│   ├── polls.py                      # poll question bank (Sunday engagement)
-│   └── llm_content.py                # Gemini/OpenAI commentary, with safe fallback
-└── .github/workflows/
-    ├── daily_post.yml                 # runs daily_post.py every day
-    └── refresh_threads_token.yml      # runs refresh_threads_token.py weekly
-```
+THREADS LINK STRATEGY: outbound links are widely reported to suppress reach
+on Threads, so every Threads post (Monday/Tuesday/Wednesday/Friday/urgent)
+keeps its main body link-free and posts the site link as the FIRST REPLY
+instead (see _mirror_to_threads() below). Telegram is unaffected and keeps
+the link inline as before, since Telegram has no such penalty.
 
-## Content rotation (redesigned)
+POSTING TIMES (see .github/workflows/daily_post.yml for the actual cron):
+    Chosen to land within the general "best time to post" window widely
+    reported for Western/English-speaking social audiences (mid-morning to
+    early afternoon ET on weekdays), spread across Monday / Wednesday /
+    Friday / Sunday so the four mandatory posts don't cluster on the same
+    day. Cron times are UTC and approximate — they drift by an hour across
+    US Daylight Saving transitions; adjust in the workflow file if you want
+    to correct for that manually.
 
-Liquidity numbers now post **once a week only** (Monday) — no more repeat
-daily snapshots that made back-to-back posts feel like the same content
-twice. The Monday card also has **no date/"updated" text** on it by design,
-so it doesn't look stale if someone sees it a few days after posting.
+Platforms:
+    Telegram  : full support (text, photo, native poll)
+    Threads   : text-only posts (no native poll support in the API — see
+                lib/post_threads.py docstring). Mirrors the same content as
+                an open question instead of a poll where applicable.
 
-| Day | Content | Platforms | Approx. post time (UTC) |
-|---|---|---|---|
-| Monday | **Weekly Liquidity Result** — speedometer gauge + 1W/4W/13W/26W/52W % change strip + the top-2 drivers behind this week's number | Telegram (photo), Threads (text+image) | 14:00 (~10am ET) |
-| Wednesday | **Knowledge post** — rotates weekly between a liquidity-indicator concept (TGA / Fed balance sheet / RRP / bank reserves) and a rate concept (Fed Funds / 10Y / 2Y / 10Y-2Y spread / SOFR), each with its own 52-week chart | Telegram (photo), Threads (text+image) | 15:00 (~11am ET) |
-| Friday | Term of the Day — rotating finance glossary | Telegram (text+photo), Threads (text+image) | 16:00 (~12pm ET) |
-| Sunday | Community engagement — generic opinion poll | Telegram (native poll), Threads (native poll) | 18:00 (~2pm ET) |
-| Tue / Thu / Sat | No scheduled main post | — | 14:00 (urgent scan only) |
-| **Any day** | **Unified urgent scanner** — scans EVERY monitored series (all 4 liquidity components + all 5 rate series + the combined net-flow metric) for the single most notable record / streak / turning-point / big-move signal, and posts it immediately, independent of the schedule above. Posts nothing if nothing is genuinely notable (quality over forced volume). | Telegram + Threads | Checked on every scheduled run |
+Local test:
+    export TELEGRAM_BOT_TOKEN=xxxx
+    export TELEGRAM_CHAT_ID=xxxx
+    export FRED_API_KEY=xxxx                # optional
+    export THREADS_USER_ID=xxxx             # optional, skip Threads if unset
+    export THREADS_ACCESS_TOKEN=xxxx        # optional
+    export LLM_PROVIDER=gemini              # or "openai"
+    export GEMINI_API_KEY=xxxx              # or OPENAI_API_KEY
+    export SITE_URL="https://americayoudongsung.netlify.app/en"   # <-- CONFIRM THIS
+    python daily_post.py
+"""
+from __future__ import annotations
 
-Posting times are chosen within the commonly-cited "best time to post"
-window for Western/English-speaking audiences (roughly 9am-1pm ET on
-weekdays), spread across Monday/Wednesday/Friday/Sunday so the four
-mandatory posts don't cluster together. See `.github/workflows/daily_post.yml`
-for the exact cron entries — adjust freely, and note UTC cron times drift by
-an hour relative to US Eastern Time across Daylight Saving transitions.
+import os
+import sys
+import traceback
+from datetime import datetime, timezone
 
-### Rate indicators — confirm before going live
+from lib.fetch_data import fetch_all, FetchError
+from lib.compute_liquidity import (
+    compute_net_market_flow,
+    classify_state,
+    compute_net_market_flow_history,
+    compute_gauge_angle,
+    compute_window_changes,
+    compute_top_drivers,
+)
+from lib.generate_card import (
+    create_gauge_card,
+    create_knowledge_card,
+    create_term_card,
+    create_fact_card,
+)
+from lib.post_telegram import send_photo, send_text, send_poll, TelegramError
+from lib.post_threads import publish_text_post, publish_image_post, publish_poll_post, reply_to_post, ThreadsError
+from lib.github_image_host import publish_image_to_repo, ImageHostError
+from lib.terms import get_term_of_the_day, format_term_caption
+from lib.polls import pick_open_question_for_sunday, GENERIC_LIQUIDITY_POLLS
+from lib.llm_content import generate_open_question, generate_fact_caption
+from lib.reply_templates import generate_reply_snippets, format_reply_toolkit_message
+from lib.signal_scanner import get_top_signal
+from lib.knowledge_content import build_knowledge_content
+from lib.fetch_calendar import get_events_this_month, format_monthly_calendar_caption, CalendarError
 
-The Wednesday rate-topic rotation and the urgent scanner's rate coverage
-pull `DFF`, `DGS10`, `DGS2`, `T10Y2Y`, `SOFR` via your site's existing
-`get-csv-data` endpoint (see `lib/fetch_data.py` → `OPTIONAL_RATE_INDICATORS`).
-**Confirm these indicator codes actually match what your site's rates page
-supports** — if a code isn't supported, it's skipped automatically (never
-breaks the pipeline), but the rate-topic rotation/scanning just won't have
-data for it until you fix the code to match.
+# --- IMPORTANT: confirm this matches your actual live English page URL ---
+SITE_URL = os.environ.get("SITE_URL", "https://americayoudongsung.netlify.app/en")
 
-## Can this really run with zero manual work?
+MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY = range(7)
 
-**Telegram: yes, 100%, including polls.** `sendPoll` is a first-class Bot API
-endpoint — no special permission needed beyond the bot being a channel admin.
 
-**Threads: yes, for text/image posts AND native polls — one caveat:**
-1. **Native polls ARE supported** (Meta added `poll_attachment` support to
-   the Threads API in April 2025 — confirmed against Meta's official
-   changelog). `lib/post_threads.py` → `publish_poll_post()` posts a real
-   Threads poll widget (2-4 options) on Sunday, not a text workaround.
-2. **One-time manual OAuth setup is unavoidable** (Meta requires a human to
-   click "Allow" once — there's no way around this for any Meta product).
-   After that one-time setup, `refresh_threads_token.py` keeps the access
-   token alive indefinitely with zero further manual work, because it writes
-   the refreshed token back into your GitHub Secrets automatically.
+# ---------------------------------------------------------------------------
+# Threads helper — never let a Threads failure break the Telegram post.
+#
+# LINK STRATEGY: Threads' algorithm is widely reported to suppress reach on
+# posts whose main body contains an outbound link. So for Threads specifically
+# (NOT Telegram, which has no such penalty), the site link is stripped out of
+# the main post and instead posted as the FIRST REPLY right after publishing —
+# the main post stays link-free and gets full organic reach, while anyone who
+# wants the link taps into the reply.
+# ---------------------------------------------------------------------------
+def _split_link_line(caption: str, site_url: str) -> tuple[str, str]:
+    """Splits a caption built with a '...\\n\\n👉 {site_url}\\n#hashtags'-style
+    ending into (body_without_link, link_reply_text). The body gets a short
+    non-URL hint telling readers the link is in the reply; hashtags (if any)
+    stay in the body since they aren't links and don't carry the same
+    suppression risk."""
+    lines = caption.split("\n")
+    kept = [ln for ln in lines if site_url not in ln]
+    body = "\n".join(kept).rstrip()
+    if body:
+        body += "\n\n🔗 Full live dashboard — link in the first reply 👇"
+    link_text = f"🔗 {site_url}"
+    return body, link_text
 
-## One-time Threads setup (skip this whole section if you only want Telegram)
 
-1. Make sure your Threads account is linked to an **Instagram Business or
-   Creator account**.
-2. Go to `https://developers.facebook.com` → Create App → type "Business" →
-   add the **Threads** use case.
-3. Complete the OAuth consent flow once (Meta's docs walk through this —
-   search "Threads API Get Started"): you'll end up with a **short-lived
-   token**, which you exchange for a **long-lived token** (valid 60 days)
-   and your **THREADS_USER_ID**.
-4. Store `THREADS_USER_ID` and `THREADS_ACCESS_TOKEN` as GitHub Secrets.
-5. Create a **GitHub Personal Access Token** (classic, `repo` scope, or
-   fine-grained with "Secrets: write") so the bot can refresh its own token.
-   Store it as the `GH_PAT` secret.
-6. Done. `refresh_threads_token.yml` runs weekly and keeps the token alive
-   forever without you touching it again.
+def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str | None = SITE_URL) -> None:
+    if not os.environ.get("THREADS_USER_ID") or not os.environ.get("THREADS_ACCESS_TOKEN"):
+        print("[Threads] Not configured, skipping mirror post.")
+        return
 
-If you skip Threads setup entirely, everything still works — `daily_post.py`
-detects the missing credentials and simply skips the Threads mirror post
-(Telegram posting is unaffected).
+    body, link_text = _split_link_line(text, site_url) if site_url and site_url in text else (text, None)
 
-## LLM commentary setup (Gemini or OpenAI — your choice)
+    post_id = None
+    if image_path:
+        try:
+            print("[Threads] Publishing generated image to repo for a public URL...")
+            image_url = publish_image_to_repo(image_path)
+            print(f"  -> {image_url}")
+            resp = publish_image_post(body, image_url)
+            post_id = resp.get("id")
+            print("[Threads] Mirrored with image successfully.")
+        except (ImageHostError, ThreadsError) as e:
+            print(f"[Threads] Image mirror failed, falling back to text-only: {e}", file=sys.stderr)
 
-Set `LLM_PROVIDER` to `gemini` (default) or `openai`, and set the matching
-API key:
+    if post_id is None:
+        try:
+            resp = publish_text_post(body)
+            post_id = resp.get("id")
+            print("[Threads] Mirrored (text-only) successfully.")
+        except ThreadsError as e:
+            print(f"[Threads] Mirror failed (non-fatal): {e}", file=sys.stderr)
+            return
 
-- Gemini: `GEMINI_API_KEY` — free tier available at
-  `https://aistudio.google.com/apikey`
-- OpenAI: `OPENAI_API_KEY` — `https://platform.openai.com/api-keys`
+    if post_id and link_text:
+        try:
+            reply_to_post(post_id, link_text)
+            print("[Threads] Link posted as first reply.")
+        except ThreadsError as e:
+            print(f"[Threads] Reply-with-link failed (non-fatal, main post still up): {e}", file=sys.stderr)
 
-**If neither is configured, or the API call fails for any reason, the bot
-automatically falls back to a deterministic template sentence** — the core
-numbers always post; the LLM only adds flavor on top and can never break
-the pipeline.
 
-## SITE_URL — confirm this before going live
+def _strip_html(text: str) -> str:
+    for tag in ("<b>", "</b>", "<i>", "</i>"):
+        text = text.replace(tag, "")
+    return text
 
-`SITE_URL` defaults to `https://americayoudongsung.netlify.app/en` in the
-code. **Please verify this is your actual live English page URL** and
-override it via the `SITE_URL` GitHub Secret if it's different.
 
-## Full environment variable reference
+# ---------------------------------------------------------------------------
+# Monday: Weekly Liquidity Result (gauge + % change strip + top drivers)
+# ---------------------------------------------------------------------------
+def run_monday_liquidity_result(data_store: dict | None = None) -> int:
+    print("[1/4] Fetching data...")
+    data_store = data_store or fetch_all()
 
-| Variable | Required for | Notes |
-|---|---|---|
-| `TELEGRAM_BOT_TOKEN` | Everything | from @BotFather |
-| `TELEGRAM_CHAT_ID` | Everything | your channel's chat id |
-| `ADMIN_CHAT_ID` | Failure alerts | optional |
-| `SITE_API_BASE` | Data fetch | defaults to the Netlify function base |
-| `SITE_URL` | Link in captions | **confirm this matches your live EN page** |
-| `FRED_API_KEY` | Monday calendar | free, instant: fred.stlouisfed.org/docs/api/api_key.html |
-| `THREADS_USER_ID` / `THREADS_ACCESS_TOKEN` | Threads mirror | optional; skipped if unset |
-| `GH_PAT` / `GH_REPO` | Threads token self-refresh | `GH_REPO` is auto-filled by `${{ github.repository }}` in the workflow |
-| `LLM_PROVIDER` | Angle commentary | `gemini` or `openai`, defaults to `gemini` |
-| `GEMINI_API_KEY` / `OPENAI_API_KEY` | Angle commentary | optional; falls back to templates if missing |
+    print("[2/4] Computing this week's liquidity result...")
+    result = compute_net_market_flow(data_store)
+    state = classify_state(result["net_market_flow"])
+    gauge_angle = compute_gauge_angle(result["net_market_flow"])
+    window_changes = compute_window_changes(data_store)
+    top_drivers = compute_top_drivers(result, top_n=2)
+    print(f"  -> {result['net_market_flow']:+.1f} B$/Week — {state['text_en']}")
 
-## Local testing
+    print("[3/4] Generating gauge card (no date, auto-cropped)...")
+    image_path = create_gauge_card(
+        net_market_flow=result["net_market_flow"],
+        state=state,
+        gauge_angle=gauge_angle,
+        window_changes=window_changes,
+        top_drivers=top_drivers,
+    )
 
-```bash
-pip install -r requirements.txt
-export TELEGRAM_BOT_TOKEN=xxxx
-export TELEGRAM_CHAT_ID=xxxx
-python daily_post.py
-```
+    driver_sentence = " and ".join(
+        f"{d['label']} ({'+' if d['value'] > 0 else ''}{d['value']:.1f} B$/Wk)" for d in top_drivers
+    )
+    sign = "+" if result["net_market_flow"] > 0 else ""
+    caption = (
+        f"{state['emoji']} <b>US Market Liquidity — Weekly Result</b>\n\n"
+        f"Net flow: <b>{sign}{result['net_market_flow']} B$/Week</b> — {state['text_en']}\n\n"
+        f"Driven mainly by {driver_sentence}.\n\n"
+        f"👉 For full details, check the page: {SITE_URL}\n"
+        f"#USLiquidity #FederalReserve"
+    )
 
-The script checks the current UTC day of week and runs the matching branch —
-so testing a specific day's content locally means temporarily patching
-`datetime.now()` (see the mock tests used during development) or just running
-it on that actual day.
+    print("[4/4] Posting...")
+    send_photo(image_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=image_path)
 
-## Extending further
+    print("Done! (Monday liquidity result)")
+    return 0
 
-- Add more platforms by copying the `lib/post_threads.py` pattern (a
-  `publish_text_post()`-shaped function) and calling it from `_mirror_to_threads`-style
-  wrapper in `daily_post.py`.
-- Add more poll questions to `lib/polls.py` — `GENERIC_LIQUIDITY_POLLS` rotates
-  automatically by ISO week number.
-- Add more glossary terms to `lib/terms.py` — `TERMS` rotates automatically by
-  day-of-year.
-- Tune trigger sensitivity in `lib/triggers.py` (`STREAK_ALERT_THRESHOLD`,
-  `RECORD_LOOKBACK_WEEKS`).
+
+# ---------------------------------------------------------------------------
+# Tuesday: this month's major US econ release calendar (FRED)
+# ---------------------------------------------------------------------------
+def run_tuesday_calendar() -> int:
+    print("[1/2] Fetching this month's FRED release calendar...")
+    try:
+        events = get_events_this_month()
+    except CalendarError as e:
+        print(f"[WARN] Calendar fetch failed, skipping gracefully: {e}", file=sys.stderr)
+        return 0
+
+    print(f"  -> {len(events)} events this month")
+    caption = format_monthly_calendar_caption(events, SITE_URL)
+
+    print("[2/2] Posting...")
+    send_text(caption)
+    _mirror_to_threads(_strip_html(caption))
+
+    print("Done! (Tuesday calendar)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Wednesday: Knowledge rotation (liquidity concepts <-> rate concepts)
+# ---------------------------------------------------------------------------
+def run_wednesday_knowledge(data_store: dict | None = None) -> int:
+    print("[1/3] Fetching data...")
+    data_store = data_store or fetch_all()
+
+    print("[2/3] Picking this week's knowledge topic...")
+    content = build_knowledge_content(data_store)
+    if not content:
+        print("[WARN] No usable data for this week's topic, skipping gracefully.")
+        return 0
+    print(f"  -> ({content['pool']}) {content['title']}")
+
+    print("[3/3] Generating chart card + posting...")
+    image_path = create_knowledge_card(
+        title=content["title"],
+        chart_values=content["chart_values"],
+        chart_dates=content["chart_dates"],
+        unit=content["unit"],
+        ticker=content["ticker"],
+    )
+
+    caption = (
+        f"📚 <b>{content['title']}</b>\n\n"
+        f"{content['explainer']}\n\n"
+        f"👉 Full charts & data: {SITE_URL}\n"
+        f"#USLiquidity #FederalReserve #{content['ticker']}"
+    )
+    send_photo(image_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+
+    print("Done! (Wednesday knowledge)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Friday: Term of the Day (finance glossary)
+# ---------------------------------------------------------------------------
+def run_friday_term() -> int:
+    print("[1/3] Picking today's term...")
+    term_entry = get_term_of_the_day()
+    print(f"  -> {term_entry['term']}")
+
+    print("[2/3] Generating term card image...")
+    image_path = create_term_card(term_entry["term"], term_entry["definition"])
+
+    print("[3/3] Posting...")
+    caption = format_term_caption(term_entry, SITE_URL)
+    send_photo(image_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+
+    print("Done! (Friday term of the day)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Sunday: community engagement poll
+# ---------------------------------------------------------------------------
+def run_sunday_engagement() -> int:
+    print("[1/2] Posting opinion poll to Telegram...")
+    question = pick_open_question_for_sunday()
+    options = next(opts for q, opts in GENERIC_LIQUIDITY_POLLS if q == question)
+    send_text(f"💬 <b>This Week's Question</b>\n\n{question}")
+    send_poll(question, options)
+
+    print("[2/2] Mirroring to Threads as a NATIVE poll (Threads API added poll "
+          "support in April 2025 — poll_attachment param; see lib/post_threads.py)...")
+    if os.environ.get("THREADS_USER_ID") and os.environ.get("THREADS_ACCESS_TOKEN"):
+        try:
+            publish_poll_post(f"💬 {question}", options)
+            print("[Threads] Native poll posted successfully.")
+        except ThreadsError as e:
+            print(f"[Threads] Native poll failed, falling back to text: {e}", file=sys.stderr)
+            _mirror_to_threads(f"💬 {question}\n(Reply with your take!)")
+    else:
+        print("[Threads] Not configured, skipping mirror post.")
+
+    print("Done! (Sunday engagement)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# Any day: unified urgent scanner (liquidity + rates + combined metric)
+# ---------------------------------------------------------------------------
+def run_signal_scan(data_store: dict) -> int:
+    print("[Signal Scan] Scanning all monitored series for a notable fact...")
+    signal = get_top_signal(data_store)
+    if not signal:
+        print("[Signal Scan] Nothing notable today, skipping.")
+        return 0
+
+    print(f"  -> [{signal['category']}] {signal['signal_type']} on {signal['ticker']}: {signal['fact_text']}")
+
+    image_path = create_fact_card(
+        fact_text=signal["fact_text"],
+        ticker=signal["ticker"],
+        chart_values=signal["chart_values"],
+        chart_dates=signal["chart_dates"],
+        unit=signal["unit"],
+    )
+
+    caption = generate_fact_caption(
+        fact_text=signal["fact_text"],
+        ticker=signal["ticker"],
+        current_value=signal["current_value"],
+        unit=signal["unit"],
+        site_url=SITE_URL,
+    )
+
+    send_photo(image_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+    print("[Signal Scan] Posted.")
+    return 0
+
+
+def _send_daily_reply_toolkit(data_store: dict | None = None) -> None:
+    """Optional, private, manual-use-only: today's reply snippets for the
+    'reply guy' growth strategy. Never posted publicly."""
+    try:
+        admin_chat_id = os.environ.get("ADMIN_CHAT_ID")
+        if not admin_chat_id:
+            return
+        data_store = data_store or fetch_all()
+        result = compute_net_market_flow(data_store)
+        snippets = generate_reply_snippets(result, SITE_URL)
+        message = format_reply_toolkit_message(snippets, result["as_of_date"])
+        send_text(message, chat_id=admin_chat_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[Reply Toolkit] Skipped due to error: {e}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+def main() -> int:
+    weekday = datetime.now(timezone.utc).weekday()
+    rc = 0
+
+    try:
+        data_store = fetch_all()
+
+        if weekday == MONDAY:
+            rc = run_monday_liquidity_result(data_store)
+        elif weekday == TUESDAY:
+            rc = run_tuesday_calendar()
+        elif weekday == WEDNESDAY:
+            rc = run_wednesday_knowledge(data_store)
+        elif weekday == FRIDAY:
+            rc = run_friday_term()
+        elif weekday == SUNDAY:
+            rc = run_sunday_engagement()
+        else:  # Thursday, Saturday — no scheduled main post
+            print("No scheduled main post today; running the urgent scanner only.")
+
+        # Unified urgent scanner — runs every day regardless of the branch
+        # above, and only posts if something is genuinely notable.
+        try:
+            run_signal_scan(data_store)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Signal Scan] Skipped due to error: {e}", file=sys.stderr)
+
+        _send_daily_reply_toolkit(data_store)
+
+        return rc
+
+    except (FetchError, TelegramError, ValueError) as e:
+        print(f"[ERROR] {e}", file=sys.stderr)
+        _notify_admin_on_error(str(e))
+        return 1
+    except Exception as e:  # noqa: BLE001
+        print(f"[UNEXPECTED ERROR] {e}", file=sys.stderr)
+        traceback.print_exc()
+        _notify_admin_on_error(f"Unexpected error: {e}")
+        return 1
+
+
+def _notify_admin_on_error(message: str) -> None:
+    admin_chat_id = os.environ.get("ADMIN_CHAT_ID")
+    if not admin_chat_id:
+        return
+    try:
+        send_text(f"🚨 [Liquidity Bot] Daily post issue\n{message}", chat_id=admin_chat_id)
+    except Exception:
+        pass
+
+
+if __name__ == "__main__":
+    sys.exit(main())
