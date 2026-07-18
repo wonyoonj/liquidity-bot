@@ -22,15 +22,27 @@ REQUIRED_INDICATORS = [
     "MMF2MARKET", "MMF2GOVERNMENT", "MMMFFAQ027S",
 ]
 
-# Rate indicators shown on the site's "금리" (rates) page. These are OPTIONAL —
-# fetch_all() will not fail if any of these are missing/unsupported by your
-# Netlify endpoint. Used by: (1) the Wednesday knowledge rotation, and
-# (2) the "any day" urgent scanner, so both can cover rates, not just liquidity.
-# NOTE: confirm these indicator codes actually match what your site's
-# get-csv-data function supports (these are the standard FRED series IDs —
-# Fed Funds Rate, 10Y Treasury, 2Y Treasury, 10Y-2Y curve spread, SOFR).
-# Add/remove/rename freely to match your rates page.
-OPTIONAL_RATE_INDICATORS = ["DFF", "DGS10", "DGS2", "T10Y2Y", "SOFR"]
+# Rate indicators shown on the site's "금리" (rates) page — CONFIRMED against
+# the actual csvfile/ listing in the user's fred-data GitHub repo (checked
+# July 2026). These are the real indicator codes the site's own
+# get-csv-data function supports; fetch_all() will still skip any that ever
+# go missing without breaking the pipeline.
+# NOTE: the site does NOT have a raw T10Y2Y series — the 10Y-2Y spread and
+# SOFR-EFFR / SOFR-IORB spreads are computed CLIENT-SIDE on the site from
+# DGS10/DGS2/SOFR/FEDFUNDS/IORB. Our bot mirrors that: see
+# lib/signal_scanner.py's DERIVED_SPREAD_TARGETS and
+# lib/knowledge_content.py's derived YIELD_SPREAD topic, both computed from
+# the raw series below rather than fetched directly.
+OPTIONAL_RATE_INDICATORS = [
+    "FEDFUNDS",  # EFFR — Effective Federal Funds Rate
+    "SOFR",      # Secured Overnight Financing Rate
+    "IORB",      # Interest on Reserve Balances
+    "DPCREDIT",  # Fed discount window primary credit rate
+    "DGS3MO",    # 3-Month Treasury yield
+    "DGS2",      # 2-Year Treasury yield
+    "DGS10",     # 10-Year Treasury yield
+    "RRPONTSYAWARD",  # RRP award rate
+]
 
 
 class FetchError(RuntimeError):

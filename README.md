@@ -71,15 +71,27 @@ mandatory posts don't cluster together. See `.github/workflows/daily_post.yml`
 for the exact cron entries — adjust freely, and note UTC cron times drift by
 an hour relative to US Eastern Time across Daylight Saving transitions.
 
-### Rate indicators — confirm before going live
+### Rate indicators — confirmed against your actual site data (July 2026)
 
-The Wednesday rate-topic rotation and the urgent scanner's rate coverage
-pull `DFF`, `DGS10`, `DGS2`, `T10Y2Y`, `SOFR` via your site's existing
-`get-csv-data` endpoint (see `lib/fetch_data.py` → `OPTIONAL_RATE_INDICATORS`).
-**Confirm these indicator codes actually match what your site's rates page
-supports** — if a code isn't supported, it's skipped automatically (never
-breaks the pipeline), but the rate-topic rotation/scanning just won't have
-data for it until you fix the code to match.
+Checked directly against the `csvfile/` listing in your `fred-data` GitHub
+repo. The site does NOT have `DFF` or `T10Y2Y` as raw series — corrected to
+the real codes below:
+
+| Bot code | Site label | Site CSV |
+|---|---|---|
+| `FEDFUNDS` | EFFR 금리 | ✅ `FEDFUNDS.csv` |
+| `SOFR` | SOFR 금리 | ✅ `SOFR.csv` |
+| `IORB` | IORB 금리 | ✅ `IORB.csv` |
+| `DPCREDIT` | 연준 할인율 | ✅ `DPCREDIT.csv` |
+| `DGS3MO` | 3개월 미 국채금리 | ✅ `DGS3MO.csv` |
+| `DGS2` | 2년물 미 국채금리 | ✅ `DGS2.csv` |
+| `DGS10` | 10년물 미 국채금리 | ✅ `DGS10.csv` |
+| `RRPONTSYAWARD` | 역레포 금리 | ✅ `RRPONTSYAWARD.csv` |
+| *(derived)* `YIELD_SPREAD` = DGS10 − DGS2 | 미국 장단기 금리차 | not a raw CSV on the site either — computed client-side there, mirrored the same way in `lib/signal_scanner.py` / `lib/knowledge_content.py` |
+| *(derived)* `SOFR_FEDFUNDS_SPREAD`, `SOFR_IORB_SPREAD` | SOFR 스프레드 지표들 | same — computed from already-fetched raw series, not fetched directly |
+
+All of these feed both the Wednesday knowledge rotation and the any-day
+unified urgent scanner.
 
 ## Can this really run with zero manual work?
 

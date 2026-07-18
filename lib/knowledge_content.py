@@ -71,67 +71,106 @@ LIQUIDITY_TOPICS = [
 ]
 
 # --- Rate concept rotation ------------------------------------------------
-# NOTE: confirm these FRED codes match what your site's rates page actually
-# tracks (see lib/fetch_data.py OPTIONAL_RATE_INDICATORS) and edit freely.
+# CONFIRMED against the real csvfile/ listing in the site's GitHub repo
+# (checked July 2026) — these are the site's actual FRED codes.
 RATE_TOPICS = [
     {
-        "key": "DFF", "ticker": "DFF", "unit": "%", "scale": 1,
-        "title": "What is the Fed Funds Rate?",
+        "key": "FEDFUNDS", "ticker": "FEDFUNDS", "unit": "%", "scale": 1,
+        "title": "What is the EFFR (Effective Fed Funds Rate)?",
         "explainer": (
-            "This is the interest rate the Fed sets for banks lending to each "
-            "other overnight — the anchor for every other borrowing rate in the "
-            "economy, from mortgages to credit cards. When the Fed hikes it, "
-            "borrowing gets more expensive everywhere and liquidity conditions "
-            "tighten. When the Fed cuts it, credit gets cheaper and easier to "
-            "access, which tends to loosen liquidity conditions broadly."
-        ),
-    },
-    {
-        "key": "DGS10", "ticker": "DGS10", "unit": "%", "scale": 1,
-        "title": "What is the 10-Year Treasury Yield?",
-        "explainer": (
-            "This is the rate the US government pays to borrow money for 10 "
-            "years, and it's the benchmark for mortgage rates, corporate "
-            "borrowing costs, and stock valuations worldwide. Rising yields "
-            "mean tighter financial conditions (borrowing costs up, asset "
-            "prices pressured); falling yields mean looser conditions."
-        ),
-    },
-    {
-        "key": "DGS2", "ticker": "DGS2", "unit": "%", "scale": 1,
-        "title": "What is the 2-Year Treasury Yield?",
-        "explainer": (
-            "The 2-year yield reflects where markets expect the Fed Funds Rate "
-            "to average over the next two years — it's the market's real-time "
-            "vote on future Fed policy. It often moves BEFORE the Fed actually "
-            "acts, making it one of the earliest signals of a coming shift in "
-            "liquidity conditions."
-        ),
-    },
-    {
-        "key": "T10Y2Y", "ticker": "T10Y2Y", "unit": "%", "scale": 1,
-        "title": "What is the 10Y-2Y Yield Curve Spread?",
-        "explainer": (
-            "This is the gap between long-term and short-term Treasury yields. "
-            "When it goes negative (an 'inverted' curve), it has historically "
-            "signaled tight liquidity conditions and preceded most US "
-            "recessions. When it steepens back into positive territory, it "
-            "often marks the transition into an easier liquidity regime."
+            "This is the actual overnight rate banks pay each other, and it's "
+            "the anchor for every other borrowing rate in the economy, from "
+            "mortgages to credit cards. When it rises, borrowing gets more "
+            "expensive everywhere and liquidity conditions tighten. When it "
+            "falls, credit gets cheaper and easier to access, loosening "
+            "liquidity conditions broadly."
         ),
     },
     {
         "key": "SOFR", "ticker": "SOFR", "unit": "%", "scale": 1,
         "title": "What is SOFR?",
         "explainer": (
-            "SOFR (Secured Overnight Financing Rate) is the rate banks actually "
-            "pay to borrow cash overnight against Treasury collateral — it's "
-            "the real-world pulse of short-term funding markets. Sudden SOFR "
-            "spikes above the Fed Funds Rate are an early warning that cash is "
-            "getting scarce in the plumbing of the financial system, even "
-            "before it shows up anywhere else."
+            "SOFR (Secured Overnight Financing Rate) is the rate banks "
+            "actually pay to borrow cash overnight against Treasury "
+            "collateral — the real-world pulse of short-term funding "
+            "markets. Sudden SOFR spikes above EFFR or IORB are an early "
+            "warning that cash is getting scarce in the plumbing of the "
+            "financial system, even before it shows up anywhere else."
+        ),
+    },
+    {
+        "key": "IORB", "ticker": "IORB", "unit": "%", "scale": 1,
+        "title": "What is IORB (Interest on Reserve Balances)?",
+        "explainer": (
+            "IORB is the interest the Fed pays banks on the reserves they "
+            "hold at the Fed. It's the floor of the Fed's rate corridor: "
+            "banks won't lend for less than they can earn risk-free at the "
+            "Fed. When money-market rates like SOFR trade below IORB, it "
+            "signals liquidity is abundant; when SOFR pushes above IORB, "
+            "it signals cash is getting tight."
+        ),
+    },
+    {
+        "key": "DPCREDIT", "ticker": "DPCREDIT", "unit": "%", "scale": 1,
+        "title": "What is the Fed Discount Rate?",
+        "explainer": (
+            "This is the rate the Fed charges banks that borrow directly "
+            "from its discount window — a backstop lending facility for "
+            "when banks can't get funding elsewhere. It's rarely used in "
+            "normal times, so a sudden jump in discount window borrowing "
+            "(alongside this rate) is one of the clearest signals that "
+            "liquidity has gotten tight somewhere in the banking system."
+        ),
+    },
+    {
+        "key": "DGS3MO", "ticker": "DGS3MO", "unit": "%", "scale": 1,
+        "title": "What is the 3-Month Treasury Yield?",
+        "explainer": (
+            "This tracks what the US government pays to borrow for just "
+            "three months, making it one of the most sensitive gauges of "
+            "near-term Fed policy expectations and short-term liquidity "
+            "conditions. It moves quickly around FOMC meetings and debt-"
+            "ceiling events, often before other rates react."
+        ),
+    },
+    {
+        "key": "DGS2", "ticker": "DGS2", "unit": "%", "scale": 1,
+        "title": "What is the 2-Year Treasury Yield?",
+        "explainer": (
+            "The 2-year yield reflects where markets expect the Fed Funds "
+            "Rate to average over the next two years — it's the market's "
+            "real-time vote on future Fed policy. It often moves BEFORE the "
+            "Fed actually acts, making it one of the earliest signals of a "
+            "coming shift in liquidity conditions."
+        ),
+    },
+    {
+        "key": "DGS10", "ticker": "DGS10", "unit": "%", "scale": 1,
+        "title": "What is the 10-Year Treasury Yield?",
+        "explainer": (
+            "This is the benchmark for mortgage rates, corporate borrowing "
+            "costs, and stock valuations worldwide. Rising yields mean "
+            "tighter financial conditions (borrowing costs up, asset prices "
+            "pressured); falling yields mean looser conditions."
         ),
     },
 ]
+
+# Derived (not a raw CSV on the site — computed client-side there, mirrored
+# here the same way from two already-fetched raw series). Rotated into the
+# RATE_TOPICS pool as its own entry.
+YIELD_SPREAD_TOPIC = {
+    "derive": ("DGS10", "DGS2"), "ticker": "YIELD_SPREAD", "unit": "%", "scale": 1,
+    "title": "What is the 10Y-2Y Yield Curve Spread?",
+    "explainer": (
+        "This is the gap between long-term and short-term Treasury yields. "
+        "When it goes negative (an 'inverted' curve), it has historically "
+        "signaled tight liquidity conditions and preceded most US "
+        "recessions. When it steepens back into positive territory, it "
+        "often marks the transition into an easier liquidity regime."
+    ),
+}
+RATE_TOPICS.append(YIELD_SPREAD_TOPIC)
 
 
 def _last_52_weeks(series: Series) -> Series:
@@ -141,6 +180,21 @@ def _last_52_weeks(series: Series) -> Series:
     if not series:
         return []
     return series[-52:] if len(series) > 52 else series[:]
+
+
+def _derive_series(data_store: dict, key_a: str, key_b: str) -> Optional[Series]:
+    """Aligns two raw series by date and returns (date, value_a - value_b) —
+    mirrors the site's client-side spread calculation (e.g. 10Y-2Y)."""
+    series_a, series_b = data_store.get(key_a), data_store.get(key_b)
+    if not series_a or not series_b:
+        return None
+    map_b = {d.date() if hasattr(d, "date") else d: v for d, v in series_b}
+    spread = []
+    for d, va in series_a:
+        k = d.date() if hasattr(d, "date") else d
+        if k in map_b:
+            spread.append((d, va - map_b[k]))
+    return spread if len(spread) >= 4 else None
 
 
 def pick_topic_for_week(iso_week: int) -> Dict:
@@ -166,7 +220,11 @@ def build_knowledge_content(data_store: dict, as_of: Optional[datetime] = None) 
     iso_week = as_of.isocalendar()[1]
     topic = pick_topic_for_week(iso_week)
 
-    series = data_store.get(topic["key"])
+    if "derive" in topic:
+        series = _derive_series(data_store, *topic["derive"])
+    else:
+        series = data_store.get(topic["key"])
+
     if not series:
         return None
 

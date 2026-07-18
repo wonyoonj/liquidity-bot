@@ -41,17 +41,33 @@ LIQUIDITY_SCAN_TARGETS = [
 ]
 
 # Optional — only scanned if present in data_store (see fetch_data.py).
+# CONFIRMED against the real csvfile/ listing in the site's GitHub repo.
 RATE_SCAN_TARGETS = [
-    {"key": "DFF", "label": "Fed Funds Rate", "ticker": "DFF", "unit": "%",
-     "scale": 1, "higher_is_supply": False, "category": "rates"},
-    {"key": "DGS10", "label": "10-Year Treasury Yield", "ticker": "DGS10", "unit": "%",
-     "scale": 1, "higher_is_supply": False, "category": "rates"},
-    {"key": "DGS2", "label": "2-Year Treasury Yield", "ticker": "DGS2", "unit": "%",
-     "scale": 1, "higher_is_supply": False, "category": "rates"},
-    {"key": "T10Y2Y", "label": "10Y-2Y Yield Curve Spread", "ticker": "T10Y2Y", "unit": "%",
+    {"key": "FEDFUNDS", "label": "EFFR (Effective Fed Funds Rate)", "ticker": "FEDFUNDS", "unit": "%",
      "scale": 1, "higher_is_supply": False, "category": "rates"},
     {"key": "SOFR", "label": "SOFR", "ticker": "SOFR", "unit": "%",
      "scale": 1, "higher_is_supply": False, "category": "rates"},
+    {"key": "IORB", "label": "IORB (Interest on Reserve Balances)", "ticker": "IORB", "unit": "%",
+     "scale": 1, "higher_is_supply": False, "category": "rates"},
+    {"key": "DPCREDIT", "label": "Fed Discount Rate", "ticker": "DPCREDIT", "unit": "%",
+     "scale": 1, "higher_is_supply": False, "category": "rates"},
+    {"key": "DGS3MO", "label": "3-Month Treasury Yield", "ticker": "DGS3MO", "unit": "%",
+     "scale": 1, "higher_is_supply": False, "category": "rates"},
+    {"key": "DGS2", "label": "2-Year Treasury Yield", "ticker": "DGS2", "unit": "%",
+     "scale": 1, "higher_is_supply": False, "category": "rates"},
+    {"key": "DGS10", "label": "10-Year Treasury Yield", "ticker": "DGS10", "unit": "%",
+     "scale": 1, "higher_is_supply": False, "category": "rates"},
+    {"key": "RRPONTSYAWARD", "label": "RRP Award Rate", "ticker": "RRPONTSYAWARD", "unit": "%",
+     "scale": 1, "higher_is_supply": False, "category": "rates"},
+]
+
+# The site computes these AS SPREADS client-side (no raw CSV exists for
+# them) — mirrored here the same way, built from two already-fetched raw
+# series rather than fetched directly.
+DERIVED_SPREAD_TARGETS = [
+    {"a": "DGS10", "b": "DGS2", "label": "10Y-2Y Yield Curve Spread", "ticker": "YIELD_SPREAD"},
+    {"a": "SOFR", "b": "FEDFUNDS", "label": "SOFR-EFFR Spread", "ticker": "SOFR_FEDFUNDS_SPREAD"},
+    {"a": "SOFR", "b": "IORB", "label": "SOFR-IORB Spread", "ticker": "SOFR_IORB_SPREAD"},
 ]
 
 SCAN_TARGETS = LIQUIDITY_SCAN_TARGETS + RATE_SCAN_TARGETS
@@ -152,6 +168,37 @@ def _scan_one_series(data_store: dict, target: dict) -> Optional[Dict]:
     }
 
 
+def _build_spread_series(data_store: dict, key_a: str, key_b: str) -> Optional[Series]:
+    """Aligns two raw series by date and returns (date, value_a - value_b) —
+    used to mirror the site's client-side spread calculations (10Y-2Y,
+    SOFR-EFFR, SOFR-IORB) without needing a raw CSV for the spread itself."""
+    series_a, series_b = data_store.get(key_a), data_store.get(key_b)
+    if not series_a or not series_b:
+        return None
+    map_b = {d.date() if hasattr(d, "date") else d: v for d, v in series_b}
+    spread = []
+    for d, va in series_a:
+        k = d.date() if hasattr(d, "date") else d
+        if k in map_b:
+            spread.append((d, va - map_b[k]))
+    return spread if len(spread) >= 8 else None
+
+
+def _scan_derived_spreads(data_store: dict) -> List[Dict]:
+    results = []
+    for t in DERIVED_SPREAD_TARGETS:
+        spread_series = _build_spread_series(data_store, t["a"], t["b"])
+        if not spread_series:
+            continue
+        temp_store = {"_SPREAD": spread_series}
+        target = {"key": "_SPREAD", "label": t["label"], "ticker": t["ticker"],
+                  "unit": "%", "scale": 1, "higher_is_supply": False, "category": "rates"}
+        signal = _scan_one_series(temp_store, target)
+        if signal:
+            results.append(signal)
+    return results
+
+
 def _scan_combined_metric(data_store: dict) -> Optional[Dict]:
     """Folds in the old lib/triggers.py logic (streak / record / turning
     point) for the combined net-liquidity-flow metric, so it competes on the
@@ -240,6 +287,8 @@ def scan_for_signals(data_store: dict) -> List[Dict]:
     combined = _scan_combined_metric(data_store)
     if combined:
         results.append(combined)
+
+    results.extend(_scan_derived_spreads(data_store))
 
     results.sort(key=lambda s: s["priority"], reverse=True)
     return results
