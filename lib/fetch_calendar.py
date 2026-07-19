@@ -32,6 +32,27 @@ NAME_LABEL = {
     "FOMC Press Release": "🏦 FOMC Interest Rate Decision",
 }
 
+# Rough "how much does this typically move markets/liquidity expectations"
+# ranking, used to pick the top-3 (and single most important) upcoming
+# release for the Tuesday LLM commentary. FOMC (actual rate decisions) and
+# the jobs/inflation reports the Fed watches most closely rank highest.
+RELEASE_PRIORITY = {
+    "FOMC Press Release": 5,
+    "Employment Situation": 4,
+    "Consumer Price Index": 4,
+    "Personal Income and Outlays": 3,
+    "Gross Domestic Product": 2,
+}
+
+
+def get_top_upcoming_events(events: List[Dict], n: int = 3) -> List[Dict]:
+    """From get_events_this_month()'s output, returns the top-n UPCOMING
+    (not yet past) events ranked by RELEASE_PRIORITY, then by soonest date.
+    Used for the Tuesday 'here's what matters most this month' commentary."""
+    upcoming = [e for e in events if not e["is_past"]]
+    upcoming.sort(key=lambda e: (-RELEASE_PRIORITY.get(e["name"], 1), e["date"]))
+    return upcoming[:n]
+
 WEEKDAY_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
@@ -146,7 +167,12 @@ def get_events_this_month() -> List[Dict]:
     return events
 
 
-def format_monthly_calendar_caption(events: List[Dict], site_url: str) -> str:
+def format_monthly_calendar_caption(events: List[Dict], site_url: str, why_it_matters: str = "") -> str:
+    """No hashtags by design (see reach-strategy notes in daily_post.py).
+    `why_it_matters` is the LLM-generated paragraph (see
+    lib.llm_content.generate_calendar_commentary) explaining which upcoming
+    release matters most this month and why — inserted between the full
+    calendar list and the closing link."""
     today = datetime.now(timezone.utc).date()
     month_label = today.strftime("%B %Y")
 
@@ -165,8 +191,12 @@ def format_monthly_calendar_caption(events: List[Dict], site_url: str) -> str:
         mark = "✅" if e["is_past"] else "🔜"
         lines.append(f"{mark} {d.strftime('%b %d')} ({weekday}) — {label}")
 
-    lines.append(f"\n👉 {site_url}")
-    lines.append("#USLiquidity #FOMC #CPI #NFP #FederalReserve")
+    if why_it_matters:
+        lines.append("")
+        lines.append(f"<i>Why it matters:</i> {why_it_matters}")
+
+    lines.append("")
+    lines.append(f"👉 {site_url}")
     return "\n".join(lines)
 
 
@@ -186,5 +216,4 @@ def format_weekly_calendar_caption(events: List[Dict], site_url: str) -> str:
         lines.append(f"{d.strftime('%b %d')} ({weekday}) — {label}")
 
     lines.append(f"\n👉 {site_url}")
-    lines.append("#USLiquidity #FOMC #CPI #NFP #FederalReserve")
     return "\n".join(lines)

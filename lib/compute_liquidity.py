@@ -120,10 +120,67 @@ def compute_trend_text(data_store: dict, current_result: dict) -> str:
         return ""
 
 
-GAUGE_MIN = -150.0   # net_market_flow value mapped to the far-left (full drain) needle position
-GAUGE_MAX = 150.0    # net_market_flow value mapped to the far-right (full supply) needle position
+INDEX_WINDOWS = [("1W", 1), ("4W", 4), ("12W", 12), ("52W", 52)]  # matches the site exactly
 
-# Windows shown on the Monday "speedometer" card: (label, weeks)
+
+def compute_liquidity_index(data_store: dict, lookback_weeks: int = 260) -> Dict:
+    """Re-implements the site's actual 'LIQUIDITY INDEX' gauge (index.html ->
+    renderLiquidityIndexGauge()): the current net_market_flow value's
+    PERCENTILE RANK against its own historical distribution, 0-100.
+    0 = most drained week on record (site label: UNDERSUPPLY),
+    100 = most flooded week on record (site label: FLOODED).
+    This is NOT a linear mapping of dollar value — it's rank-based, exactly
+    matching what a viewer sees on the live dashboard gauge."""
+    history = compute_net_market_flow_history(data_store, weeks=lookback_weeks)
+    if len(history) < 10:
+        raise ValueError("Not enough history to compute a percentile-based Liquidity Index.")
+
+    sorted_history = sorted(history, key=lambda h: h["as_of_date"])
+    values_sorted = sorted(h["net_market_flow"] for h in sorted_history)
+    latest = sorted_history[-1]
+    latest_val = latest["net_market_flow"]
+
+    def _percentile_of(v: float) -> int:
+        rank = sum(1 for x in values_sorted if x <= v)
+        return max(0, min(100, round((rank / len(values_sorted)) * 100)))
+
+    percentile = _percentile_of(latest_val)
+
+    if percentile >= 70:
+        status = {"text_en": "Liquidity Expansion", "color": (192, 57, 43), "bg": (253, 236, 236)}
+    elif percentile <= 30:
+        status = {"text_en": "Liquidity Contraction", "color": (28, 111, 214), "bg": (233, 242, 254)}
+    else:
+        status = {"text_en": "Neutral", "color": (184, 134, 11), "bg": (255, 243, 214)}
+
+    # 1W/4W/12W/52W change in percentile POINTS (%p) — matches site exactly.
+    window_changes = []
+    dated = [(datetime.strptime(h["as_of_date"], "%Y-%m-%d"), h["net_market_flow"]) for h in sorted_history]
+    latest_date = dated[-1][0]
+    for label, weeks in INDEX_WINDOWS:
+        target_date = latest_date - timedelta(weeks=weeks)
+        closest = min(dated[:-1], key=lambda dv: abs(dv[0] - target_date), default=None) if len(dated) > 1 else None
+        if closest is None:
+            window_changes.append({"label": label, "delta_pp": None})
+            continue
+        past_percentile = _percentile_of(closest[1])
+        window_changes.append({"label": label, "delta_pp": percentile - past_percentile})
+
+    return {
+        "percentile": percentile,
+        "latest_value": round(latest_val, 1),
+        "as_of_date": latest["as_of_date"],
+        "status": status,
+        "window_changes": window_changes,
+    }
+
+
+GAUGE_MIN = -150.0   # legacy linear gauge bounds — kept for compute_gauge_angle() below
+GAUGE_MAX = 150.0
+
+# Windows previously used for the linear % readout — superseded by
+# compute_liquidity_index()'s INDEX_WINDOWS (percentile points), kept here
+# only in case compute_window_changes() is still used elsewhere.
 CHANGE_WINDOWS = [("1W", 1), ("4W", 4), ("13W", 13), ("26W", 26), ("52W", 52)]
 
 

@@ -102,6 +102,62 @@ def _fallback_sentence(metrics: dict, angle: str) -> str:
     return f"Net market liquidity flow this week: {net:+.1f} B$/Week."
 
 
+def generate_why_it_matters(topic_label: str, context: str) -> str:
+    """Short (1-2 sentence), calm, informational explanation of WHY a given
+    data point/signal is worth paying attention to right now — used on
+    Monday/Wednesday/Thursday/Friday and the urgent scanner. Tone matches
+    the rest of this bot: matter-of-fact, no hype, no exclamation marks, no
+    emoji, no hashtags. Falls back to a generic-but-still-useful template
+    sentence if the LLM call fails, per this module's fail-open design —
+    the post never goes out without SOME explanation."""
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    prompt = (
+        "In 1-2 short sentences (under 220 characters total), explain to a retail "
+        "investor audience WHY the following financial data point matters right now. "
+        "Tone: calm, informational, matter-of-fact — like a financial news ticker, not "
+        "hype or clickbait. No emoji, no exclamation marks, no hashtags, no markdown. "
+        "Do not invent any numbers not given below.\n\n"
+        f"Topic: {topic_label}\n"
+        f"Context: {context}\n\n"
+        "Output only the explanation, nothing else."
+    )
+    try:
+        caller = _call_openai if provider == "openai" else _call_gemini
+        return caller(prompt).strip()
+    except Exception:
+        return (
+            f"This matters because {topic_label} is a direct input into current US "
+            f"dollar liquidity conditions, which tend to move alongside broader asset prices."
+        )
+
+
+def generate_calendar_commentary(top_event: dict, other_events: list[dict]) -> str:
+    """Tuesday content: 2-3 calm, informational sentences on why the single
+    most important upcoming release this month is worth watching, with a
+    brief nod to the other top releases. Falls back to a template sentence
+    if the LLM call fails."""
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    others = ", ".join(e["name"] for e in other_events if e is not top_event) or "no other major releases"
+    prompt = (
+        "In 2-3 short sentences (under 320 characters total), explain to a retail investor "
+        "audience WHY the following upcoming US economic release is worth watching this month, "
+        "and briefly note what else is on the calendar. Tone: calm, informational, "
+        "matter-of-fact — no hype, no emoji, no hashtags, no exclamation marks, no markdown. "
+        "Do not invent any numbers, forecasts, or figures not given below.\n\n"
+        f"Most important upcoming release: {top_event['name']} on {top_event['date']}\n"
+        f"Also on the calendar this month: {others}\n\n"
+        "Output only the explanation, nothing else."
+    )
+    try:
+        caller = _call_openai if provider == "openai" else _call_gemini
+        return caller(prompt).strip()
+    except Exception:
+        return (
+            f"{top_event['name']} is the release most likely to move Fed policy expectations "
+            f"and short-term liquidity conditions this month, so it's worth watching closely."
+        )
+
+
 def generate_angle_commentary(metrics: dict, angle: str | None = None) -> str:
     angle = angle or random.choice(ANGLES)
     provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
@@ -117,13 +173,14 @@ def generate_angle_commentary(metrics: dict, angle: str | None = None) -> str:
 
 
 def generate_fact_caption(fact_text: str, ticker: str, current_value: float, unit: str,
-                            site_url: str) -> str:
+                            site_url: str, why_it_matters: str = "") -> str:
     """Barchart-style single-fact caption. The fact itself (fact_text) is
     already numerically grounded and deterministic (see signal_scanner.py) —
     the LLM's only job is to rephrase it into a punchier, more natural-sounding
     single sentence, in the terse 'headline + emoji' style, NOT to add new
     claims or explanation. Falls back to the raw fact_text unmodified if the
-    LLM is unavailable, which is already a perfectly usable caption on its own."""
+    LLM is unavailable, which is already a perfectly usable caption on its own.
+    No hashtags by design (see reach-strategy notes in daily_post.py)."""
     provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     prompt = (
         "Rewrite the following financial fact as ONE punchy headline-style sentence "
@@ -144,7 +201,11 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
     except Exception:
         headline = fact_text  # the deterministic fact is already a valid caption on its own
 
-    return f"{headline}\n\n👉 {site_url}\n#USLiquidity #{ticker} #FederalReserve"
+    parts = [headline]
+    if why_it_matters:
+        parts += ["", f"<i>Why it matters:</i> {why_it_matters}"]
+    parts += ["", f"👉 {site_url}"]
+    return "\n".join(parts)
 
 
 def generate_open_question(indicator_label: str, context_note: str = "") -> str:

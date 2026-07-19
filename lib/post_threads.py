@@ -168,25 +168,26 @@ def publish_poll_post(text: str, options: list[str], timeout: int = 30) -> dict:
     return publish_resp.json()
 
 
-def reply_to_post(parent_id: str, text: str, timeout: int = 30) -> dict:
+def reply_to_post(parent_id: str, text: str, image_url: str | None = None, timeout: int = 30) -> dict:
     """Posts `text` as a reply to an existing Threads post (reply_to_id param).
-    Used to put the outbound link in the FIRST REPLY instead of the main post
-    body — Threads' algorithm is widely reported to suppress reach on posts
-    whose main body contains an outbound link, so keeping the main post
-    link-free and dropping the link into a reply avoids that penalty while
-    still getting the link in front of anyone who opens the thread."""
+    Used to (a) put the outbound link in the FIRST REPLY instead of the main
+    post body — Threads' algorithm is widely reported to suppress reach on
+    posts whose main body contains an outbound link — and (b) attach a
+    SECOND image (e.g. Monday's NETMARKETFLOW trend chart) as a follow-up
+    reply so the main feed only shows one post per scheduled slot while the
+    thread itself still carries both visuals."""
     user_id, access_token = _get_credentials()
 
-    create_resp = requests.post(
-        f"{THREADS_API_BASE}/{user_id}/threads",
-        data={
-            "media_type": "TEXT",
-            "text": text[:500],
-            "reply_to_id": parent_id,
-            "access_token": access_token,
-        },
-        timeout=timeout,
-    )
+    data = {
+        "media_type": "IMAGE" if image_url else "TEXT",
+        "text": text[:500],
+        "reply_to_id": parent_id,
+        "access_token": access_token,
+    }
+    if image_url:
+        data["image_url"] = image_url
+
+    create_resp = requests.post(f"{THREADS_API_BASE}/{user_id}/threads", data=data, timeout=timeout)
     try:
         create_resp.raise_for_status()
     except requests.RequestException as e:
@@ -196,7 +197,7 @@ def reply_to_post(parent_id: str, text: str, timeout: int = 30) -> dict:
     if not creation_id:
         raise ThreadsError(f"No container id returned: {create_resp.text}")
 
-    time.sleep(2)
+    time.sleep(30 if image_url else 2)  # Meta recommends ~30s for image processing before publish
 
     publish_resp = requests.post(
         f"{THREADS_API_BASE}/{user_id}/threads_publish",

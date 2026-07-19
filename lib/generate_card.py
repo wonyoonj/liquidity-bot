@@ -1,22 +1,50 @@
 # -*- coding: utf-8 -*-
 """
-Generates English-language summary card images (daily snapshot + Friday weekly recap).
+Generates all card images in one consistent visual language ("Candidate C" —
+white rounded card on a light page background, blue accent, pill badges,
+gradient-fill line charts) chosen by the user from four design candidates.
 Uses the Inter variable font (bundled in fonts/) for clean Latin rendering.
+
+Card functions:
+    create_gauge_card()        Monday  — percentile-based Liquidity Index,
+                                dome-up speedometer (matches the site's own
+                                gauge geometry/labels exactly).
+    create_metric_chart_card() Wednesday knowledge + urgent scan + Monday's
+                                secondary NETMARKETFLOW trend — a single
+                                reusable gradient-fill line chart card.
+    create_calendar_card()     Tuesday — this month's FRED release calendar.
+    create_term_icon_card()    Friday — glossary term with a large icon
+                                (no numeric series to chart, so illustrative
+                                instead).
 """
 from __future__ import annotations
 
 import os
-from typing import List, Dict
-from PIL import Image, ImageDraw, ImageFont
+from typing import List, Dict, Optional
+from PIL import Image, ImageDraw, ImageFont, ImageChops
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(BASE_DIR, "fonts", "Inter-Variable.ttf")
 
-CANVAS_SIZE = (1080, 1080)
-BG_COLOR = (247, 248, 250)
+# --- Shared "Candidate C" visual language ---------------------------------
+PAGE_BG = (241, 243, 247)
+CARD_BG = (255, 255, 255)
+CARD_BORDER = (230, 232, 238)
 TEXT_DARK = (26, 29, 41)
+TEXT_BODY = (60, 64, 78)
 TEXT_GRAY = (108, 117, 125)
-LINE_COLOR = (222, 226, 230)
+TEXT_FAINT = (150, 155, 165)
+LINE_COLOR = (230, 232, 238)
+BLUE = (37, 99, 235)
+LIGHTBLUE = (219, 234, 254)
+GREEN_BG = (220, 252, 231)
+GREEN_TX = (21, 128, 61)
+RED_BG = (253, 236, 236)
+RED_TX = (192, 57, 43)
+AMBER_BG = (255, 243, 214)
+AMBER_TX = (184, 134, 11)
+
+CANVAS_W = 1080
 
 
 def _font(size: int, weight: str = "Regular") -> ImageFont.FreeTypeFont:
@@ -28,96 +56,9 @@ def _font(size: int, weight: str = "Regular") -> ImageFont.FreeTypeFont:
     return f
 
 
-def _autocrop(img: Image.Image, bg_color=BG_COLOR, margin: int = 28) -> Image.Image:
-    """Trims uniform background from all four edges down to the actual content
-    bounding box, then adds back a small fixed margin — used so exported cards
-    have no wasted whitespace around them (idea: 'crop exactly to the useful
-    part, not a loose screenshot')."""
-    from PIL import ImageChops
-    bg = Image.new(img.mode, img.size, bg_color)
-    diff = ImageChops.difference(img, bg)
-    bbox = diff.getbbox()
-    if not bbox:
-        return img
-    left, top, right, bottom = bbox
-    left = max(0, left - margin)
-    top = max(0, top - margin)
-    right = min(img.width, right + margin)
-    bottom = min(img.height, bottom + margin)
-    return img.crop((left, top, right, bottom))
-
-
-def create_summary_card(
-    net_market_flow: float,
-    state: dict,
-    as_of_date: str,
-    trend_text: str = "",
-    site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/summary_card.png",
-) -> str:
-    img = Image.new("RGB", CANVAS_SIZE, color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    accent = state["color"]
-    W, H = CANVAS_SIZE
-
-    draw.rectangle([0, 0, W, 140], fill=accent)
-
-    font_brand = _font(34, "Bold")
-    font_date = _font(26, "Regular")
-    font_label = _font(36, "SemiBold")
-    font_number = _font(104, "ExtraBold")
-    font_unit = _font(34, "Medium")
-    font_state = _font(46, "ExtraBold")
-    font_trend = _font(30, "Regular")
-    font_footer = _font(22, "Regular")
-
-    draw.text((50, 50), site_name, font=font_brand, fill="white")
-    date_text = f"As of {as_of_date}"
-    date_w = draw.textlength(date_text, font=font_date)
-    draw.text((W - 50 - date_w, 56), date_text, font=font_date, fill="white")
-
-    draw.text((50, 210), "This Week's Market Total Net Liquidity Supply", font=font_label, fill=TEXT_GRAY)
-
-    sign = "+" if net_market_flow > 0 else ""
-    number_text = f"{sign}{net_market_flow:.1f}"
-    draw.text((50, 280), number_text, font=font_number, fill=accent)
-
-    num_w = draw.textlength(number_text, font=font_number)
-    draw.text((50 + num_w + 20, 385), "B$ / Week", font=font_unit, fill=TEXT_GRAY)
-
-    badge_y = 520
-    state_text = state.get("text_en", state.get("text_ko", ""))
-    badge_w = max(700, int(draw.textlength(state_text, font=font_state)) + 80)
-    draw.rounded_rectangle([50, badge_y, 50 + badge_w, badge_y + 90], radius=45, fill=accent)
-    draw.text((90, badge_y + 20), state_text, font=font_state, fill="white")
-
-    if trend_text:
-        draw.text((50, badge_y + 120), trend_text.strip(" ·"), font=font_trend, fill=TEXT_GRAY)
-
-    box_y = 760
-    draw.rounded_rectangle([50, box_y, W - 50, box_y + 200], radius=20, outline=LINE_COLOR, width=2)
-    desc_lines = [
-        "Net weekly dollar flow into the market through the",
-        "Fed, Treasury (TGA), and Money Market Funds.",
-        "Positive = liquidity supply.  Negative = liquidity drain.",
-    ]
-    ly = box_y + 30
-    for line in desc_lines:
-        draw.text((80, ly), line, font=font_trend, fill=TEXT_DARK)
-        ly += 46
-
-    footer_text = "Source: FRED, Office of Financial Research (OFR)  ·  Auto-updated daily"
-    draw.text((50, H - 60), footer_text, font=font_footer, fill=TEXT_GRAY)
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    img.save(out_path)
-    return out_path
-
-
-def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> list[str]:
-    """Simple greedy word-wrap. Returns a list of lines that each fit within max_width."""
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
     words = text.split()
-    lines: list[str] = []
+    lines: List[str] = []
     current = ""
     for word in words:
         trial = f"{current} {word}".strip()
@@ -132,505 +73,367 @@ def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
     return lines
 
 
-def create_calendar_card(
-    events: list[dict],
-    site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/calendar_card.png",
-) -> str:
-    """Monday content: this week's major economic release dates."""
-    img = Image.new("RGB", CANVAS_SIZE, color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    W, H = CANVAS_SIZE
-    ACCENT = (41, 82, 227)
-    WEEKDAY = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    draw.rectangle([0, 0, W, 140], fill=ACCENT)
-    font_brand = _font(34, "Bold")
-    font_title = _font(38, "SemiBold")
-    font_event_date = _font(30, "Bold")
-    font_event_name = _font(28, "Regular")
-    font_footer = _font(22, "Regular")
-    font_empty = _font(30, "Regular")
-
-    draw.text((50, 50), site_name, font=font_brand, fill="white")
-    draw.text((50, 180), "This Week's Major US Economic Releases", font=font_title, fill=TEXT_DARK)
-
-    if not events:
-        draw.text((50, 320), "No major releases scheduled this week.", font=font_empty, fill=TEXT_GRAY)
-    else:
-        y = 300
-        row_h = 130
-        for e in events[:5]:  # cap at 5 so it always fits the canvas
-            d = e["date"]
-            weekday = WEEKDAY[d.weekday()]
-            date_text = f"{d.strftime('%b %d')} ({weekday})"
-
-            draw.rounded_rectangle([50, y, W - 50, y + row_h - 20], radius=16, fill=(255, 255, 255),
-                                    outline=LINE_COLOR, width=2)
-            draw.text((80, y + 20), date_text, font=font_event_date, fill=ACCENT)
-            draw.text((80, y + 62), e["label"], font=font_event_name, fill=TEXT_DARK)
-            y += row_h
-
-    footer_text = "Source: FRED official release calendar  ·  Auto-updated every Monday"
-    draw.text((50, H - 60), footer_text, font=font_footer, fill=TEXT_GRAY)
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    img.save(out_path)
-    return out_path
+def _autocrop(img: Image.Image, bg_color=PAGE_BG, margin: int = 30) -> Image.Image:
+    """Trims uniform page background from all four edges down to the actual
+    content bounding box, then adds back a small fixed margin."""
+    bg = Image.new(img.mode, img.size, bg_color)
+    diff = ImageChops.difference(img, bg)
+    bbox = diff.getbbox()
+    if not bbox:
+        return img
+    left, top, right, bottom = bbox
+    left = max(0, left - margin)
+    top = max(0, top - margin)
+    right = min(img.width, right + margin)
+    bottom = min(img.height, bottom + margin)
+    return img.crop((left, top, right, bottom))
 
 
-def create_term_card(
-    term: str,
-    definition: str,
-    site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/term_card.png",
-) -> str:
-    """Saturday content: term-of-the-day glossary card."""
-    img = Image.new("RGB", CANVAS_SIZE, color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    W, H = CANVAS_SIZE
-    ACCENT = (124, 58, 237)  # purple, distinct from the daily snapshot's palette
-
-    draw.rectangle([0, 0, W, 140], fill=ACCENT)
-    font_brand = _font(34, "Bold")
-    font_badge = _font(26, "Bold")
-    font_term = _font(52, "ExtraBold")
-    font_body = _font(32, "Regular")
-    font_footer = _font(22, "Regular")
-
-    draw.text((50, 50), site_name, font=font_brand, fill="white")
-
-    draw.rounded_rectangle([50, 190, 320, 234], radius=22, fill=(237, 233, 254))
-    draw.text((72, 198), "TERM OF THE DAY", font=font_badge, fill=ACCENT)
-
-    term_lines = _wrap_text(draw, term, font_term, W - 100)
-    ty = 270
-    for line in term_lines:
-        draw.text((50, ty), line, font=font_term, fill=TEXT_DARK)
-        ty += 62
-
-    body_lines = _wrap_text(draw, definition, font_body, W - 100)
-    by = ty + 30
-    for line in body_lines[:10]:  # safety cap so very long definitions don't overflow the canvas
-        draw.text((50, by), line, font=font_body, fill=TEXT_DARK)
-        by += 44
-
-    footer_text = "A new term every Saturday  ·  US Liquidity Dashboard"
-    draw.text((50, H - 60), footer_text, font=font_footer, fill=TEXT_GRAY)
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    img.save(out_path)
-    return out_path
+def _new_card(height: int, margin: int = 40):
+    """White rounded card on the light page background — every card in this
+    file starts from this so the visual language stays identical everywhere."""
+    img = Image.new("RGB", (CANVAS_W, height), PAGE_BG)
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([margin, margin, CANVAS_W - margin, height - margin],
+                         radius=28, fill=CARD_BG, outline=CARD_BORDER, width=2)
+    return img, d
 
 
-def create_story_card(
-    headline: str,
-    net_market_flow: float,
-    as_of_date: str,
-    sub_line: str = "",
-    site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/story_card.png",
-) -> str:
-    """Sunday content: record/streak-style recap card."""
-    img = Image.new("RGB", CANVAS_SIZE, color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    W, H = CANVAS_SIZE
-    accent = (25, 135, 84) if net_market_flow >= 0 else (220, 53, 69)
-
-    draw.rectangle([0, 0, W, 140], fill=accent)
-    font_brand = _font(34, "Bold")
-    font_date = _font(26, "Regular")
-    font_headline = _font(46, "ExtraBold")
-    font_number = _font(88, "ExtraBold")
-    font_unit = _font(30, "Medium")
-    font_sub = _font(30, "Regular")
-    font_footer = _font(22, "Regular")
-
-    draw.text((50, 50), site_name, font=font_brand, fill="white")
-    date_text = f"As of {as_of_date}"
-    date_w = draw.textlength(date_text, font=font_date)
-    draw.text((W - 50 - date_w, 56), date_text, font=font_date, fill="white")
-
-    headline_lines = _wrap_text(draw, headline, font_headline, W - 100)
-    hy = 200
-    for line in headline_lines[:3]:
-        draw.text((50, hy), line, font=font_headline, fill=TEXT_DARK)
-        hy += 58
-
-    sign = "+" if net_market_flow > 0 else ""
-    number_text = f"{sign}{net_market_flow:.1f}"
-    ny = hy + 40
-    draw.text((50, ny), number_text, font=font_number, fill=accent)
-    num_w = draw.textlength(number_text, font=font_number)
-    draw.text((50 + num_w + 20, ny + 30), "B$ / Week", font=font_unit, fill=TEXT_GRAY)
-
-    if sub_line:
-        sub_lines = _wrap_text(draw, sub_line, font_sub, W - 100)
-        sy = ny + 140
-        for line in sub_lines[:4]:
-            draw.text((50, sy), line, font=font_sub, fill=TEXT_DARK)
-            sy += 42
-
-    footer_text = "Source: FRED, Office of Financial Research (OFR)  ·  Weekly recap every Sunday"
-    draw.text((50, H - 60), footer_text, font=font_footer, fill=TEXT_GRAY)
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    img.save(out_path)
-    return out_path
+def _pill(d: ImageDraw.ImageDraw, x: int, y: int, text: str, font, fg, bg, align_right: bool = False):
+    w = d.textlength(text, font=font) + 30
+    x0 = (x - w) if align_right else x
+    d.rounded_rectangle([x0, y, x0 + w, y + 40], radius=20, fill=bg)
+    d.text((x0 + 15, y + 8), text, font=font, fill=fg)
+    return w
 
 
-def create_fact_card(
-    fact_text: str,
-    ticker: str,
-    chart_values: list[float],
-    chart_dates: list[str],
-    unit: str = "$B",
-    site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/fact_card.png",
-) -> str:
-    """Barchart-style single-fact card: short headline + a real line chart
-    (the chart is the visual centerpiece, not a decorative afterthought)."""
-    img = Image.new("RGB", CANVAS_SIZE, color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    W, H = CANVAS_SIZE
-    ACCENT = (17, 24, 39)  # near-black header, closer to Barchart's terminal-like look
-    UP = (16, 163, 74)
-    DOWN = (220, 38, 38)
-
-    is_up = len(chart_values) >= 2 and chart_values[-1] >= chart_values[0]
-    line_color = UP if is_up else DOWN
-
-    draw.rectangle([0, 0, W, 110], fill=ACCENT)
-    font_ticker = _font(30, "Bold")
-    font_brand = _font(22, "Regular")
-    font_headline = _font(40, "Bold")
-    font_value = _font(64, "ExtraBold")
-    font_unit = _font(26, "Medium")
-    font_axis = _font(20, "Regular")
-    font_footer = _font(20, "Regular")
-
-    draw.text((50, 30), f"${ticker}", font=font_ticker, fill="white")
-    brand_w = draw.textlength(site_name, font=font_brand)
-    draw.text((W - 50 - brand_w, 40), site_name, font=font_brand, fill=(200, 200, 210))
-
-    headline_lines = _wrap_text(draw, fact_text, font_headline, W - 100)
-    hy = 150
-    for line in headline_lines[:3]:
-        draw.text((50, hy), line, font=font_headline, fill=TEXT_DARK)
-        hy += 50
-
-    # Current value, right below the headline
-    if chart_values:
-        current = chart_values[-1]
-        val_text = f"{current:,.1f}"
-        vy = hy + 20
-        draw.text((50, vy), val_text, font=font_value, fill=line_color)
-        vw = draw.textlength(val_text, font=font_value)
-        draw.text((50 + vw + 15, vy + 22), unit, font=font_unit, fill=TEXT_GRAY)
-        chart_top = vy + 110
-    else:
-        chart_top = hy + 60
-
-    # --- Sparkline chart (the visual centerpiece) ---
-    chart_left, chart_right = 50, W - 50
-    chart_bottom = chart_top + 340
-    if len(chart_values) >= 2:
-        vmin, vmax = min(chart_values), max(chart_values)
-        vrange = (vmax - vmin) or 1.0
-        n = len(chart_values)
-        step = (chart_right - chart_left) / (n - 1)
-
-        points = []
-        for i, v in enumerate(chart_values):
-            x = chart_left + i * step
-            y = chart_bottom - ((v - vmin) / vrange) * (chart_bottom - chart_top)
-            points.append((x, y))
-
-        draw.line(points, fill=line_color, width=5, joint="curve")
-        # highlight the final (current) point
-        lx, ly = points[-1]
-        draw.ellipse([lx - 8, ly - 8, lx + 8, ly + 8], fill=line_color)
-
-        # sparse x-axis labels: first / middle / last date only, to stay clean
-        for idx in (0, n // 2, n - 1):
-            label = chart_dates[idx][5:]  # MM-DD
-            lw = draw.textlength(label, font=font_axis)
-            lx2 = chart_left + idx * step
-            draw.text((max(0, lx2 - lw / 2), chart_bottom + 15), label, font=font_axis, fill=TEXT_GRAY)
-
-    footer_text = "Source: FRED, Office of Financial Research (OFR)"
-    draw.text((50, H - 50), footer_text, font=font_footer, fill=TEXT_GRAY)
-
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    img.save(out_path)
-    return out_path
+def _header(d: ImageDraw.ImageDraw, pad: int, brand_font, ticker_font, ticker: str, site_name: str):
+    d.text((pad, 78), site_name, font=brand_font, fill=TEXT_DARK)
+    _pill(d, CANVAS_W - pad, 75, f"${ticker}", ticker_font, BLUE, LIGHTBLUE, align_right=True)
 
 
+def _footer(d: ImageDraw.ImageDraw, pad: int, y: int, font, text: str = "Source: FRED, Office of Financial Research (OFR)"):
+    d.text((pad, y), text, font=font, fill=TEXT_FAINT)
+
+
+# ---------------------------------------------------------------------------
+# Monday: percentile-based Liquidity Index, dome-up gauge (matches the site)
+# ---------------------------------------------------------------------------
 def create_gauge_card(
-    net_market_flow: float,
-    state: dict,
-    gauge_angle: float,
-    window_changes: List[Dict],
+    index_data: dict,
     top_drivers: List[Dict],
     site_name: str = "US Liquidity Dashboard",
     out_path: str = "output/gauge_card.png",
 ) -> str:
-    """Monday content: speedometer-style gauge + 1W-52W % change strip + the
-    top-2 drivers behind this week's number. Deliberately has NO date/
-    'updated' text anywhere — the goal is a card that reads as evergreen
-    'this is the current state' rather than a dated snapshot that looks
-    stale the moment a few days pass. Auto-cropped tight around the content."""
-    W, H = 1080, 1080
-    img = Image.new("RGB", (W, H), color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    accent = state["color"]
-
-    font_brand = _font(32, "Bold")
-    font_label = _font(30, "SemiBold")
-    font_number = _font(88, "ExtraBold")
-    font_unit = _font(28, "Medium")
-    font_state = _font(36, "ExtraBold")
-    font_change_label = _font(22, "Medium")
-    font_change_val = _font(30, "Bold")
-    font_driver_head = _font(28, "SemiBold")
-    font_driver = _font(26, "Regular")
-    font_footer = _font(20, "Regular")
-
-    draw.rectangle([0, 0, W, 110], fill=(17, 24, 39))
-    draw.text((50, 38), site_name, font=font_brand, fill="white")
-
-    # --- Speedometer gauge (semicircle) ---
-    cx, cy, radius = W // 2, 420, 260
-    zone_bounds = [(-90, -45, (220, 53, 69)), (-45, 0, (253, 126, 20)),
-                   (0, 45, (255, 193, 7)), (45, 90, (25, 135, 84))]
-    thickness = 34
-    bbox = [cx - radius, cy - radius, cx + radius, cy + radius]
-    for start_deg, end_deg, color in zone_bounds:
-        # PIL arc(): 0 deg = 3 o'clock, clockwise. Our gauge is -90..+90 with
-        # -90 = left (9 o'clock), +90 = right (3 o'clock), top-half semicircle.
-        draw.arc(bbox, start=180 + start_deg, end=180 + end_deg, fill=color, width=thickness)
-
-    # Needle
+    """`index_data` is the dict returned by compute_liquidity.compute_liquidity_index().
+    NO date/'updated' text anywhere by design — evergreen, not a dated
+    snapshot that looks stale a few days later."""
     import math
-    needle_rad = math.radians(180 + gauge_angle)
-    needle_len = radius - thickness / 2 - 6
-    nx = cx + needle_len * math.cos(needle_rad)
-    ny = cy + needle_len * math.sin(needle_rad)
-    draw.line([(cx, cy), (nx, ny)], fill=(17, 24, 39), width=8)
-    draw.ellipse([cx - 16, cy - 16, cx + 16, cy + 16], fill=(17, 24, 39))
 
-    draw.text((50, 175), "This Week's Net Liquidity Supply", font=font_label, fill=TEXT_GRAY)
+    H = 1250
+    img, d = _new_card(H)
+    pad = 70
 
-    sign = "+" if net_market_flow > 0 else ""
-    number_text = f"{sign}{net_market_flow:.1f}"
-    num_w = draw.textlength(number_text, font=font_number)
-    draw.text((cx - num_w / 2, cy - 60), number_text, font=font_number, fill=accent)
-    unit_text = "B$ / Week"
-    unit_w = draw.textlength(unit_text, font=font_unit)
-    draw.text((cx - unit_w / 2, cy + 40), unit_text, font=font_unit, fill=TEXT_GRAY)
+    f_brand = _font(28, "Bold")
+    f_ticker = _font(24, "SemiBold")
+    f_label = _font(30, "SemiBold")
+    f_val = _font(96, "ExtraBold")
+    f_unit = _font(30, "Medium")
+    f_explain = _font(22, "Regular")
+    f_edge = _font(19, "SemiBold")
+    f_badge = _font(26, "Bold")
+    f_change_label = _font(21, "Medium")
+    f_change_val = _font(28, "Bold")
+    f_driver_head = _font(27, "SemiBold")
+    f_driver = _font(25, "Regular")
+    f_footer = _font(19, "Regular")
 
-    state_text = state.get("text_en", state.get("text_ko", ""))
-    state_w = draw.textlength(state_text, font=font_state)
-    badge_w = state_w + 80
-    badge_y = cy + radius - 40
-    draw.rounded_rectangle([cx - badge_w / 2, badge_y, cx + badge_w / 2, badge_y + 74],
-                            radius=37, fill=accent)
-    draw.text((cx - state_w / 2, badge_y + 18), state_text, font=font_state, fill="white")
+    _header(d, pad, f_brand, f_ticker, "USLIQ", site_name)
+    d.text((pad, 150), "This Week's Liquidity Index", font=f_label, fill=TEXT_GRAY)
 
-    # --- 1W-52W % change strip ---
-    strip_y = badge_y + 130
-    draw.text((50, strip_y), "Liquidity Pace — % Change by Window", font=font_label, fill=TEXT_DARK)
-    strip_y += 55
-    n = len(window_changes)
-    box_gap = 20
-    box_w = (W - 100 - box_gap * (n - 1)) / n
-    for i, wc in enumerate(window_changes):
-        bx = 50 + i * (box_w + box_gap)
-        draw.rounded_rectangle([bx, strip_y, bx + box_w, strip_y + 130], radius=16,
-                                fill=(255, 255, 255), outline=LINE_COLOR, width=2)
-        label_w = draw.textlength(wc["label"], font=font_change_label)
-        draw.text((bx + box_w / 2 - label_w / 2, strip_y + 16), wc["label"],
-                   font=font_change_label, fill=TEXT_GRAY)
-        if wc["pct"] is None:
-            val_text = "N/A"
-            val_color = TEXT_GRAY
+    # --- dome-up gauge, pivot at the BOTTOM of the arc (matches site exactly) ---
+    cx = CANVAS_W // 2
+    pivot_y = 470
+    radius = 230
+    thickness = 30
+    bbox = [cx - radius, pivot_y - radius, cx + radius, pivot_y + radius]
+
+    steps = 48
+    for i in range(steps):
+        t0, t1 = i / steps, (i + 1) / steps
+        if t0 < 0.5:
+            u = t0 / 0.5
+            c = (int(77 + u * (255 - 77)), int(171 + u * (212 - 171)), int(247 + u * (59 - 247)))
         else:
-            val_text = f"{'+' if wc['pct'] > 0 else ''}{wc['pct']:.0f}%"
-            val_color = (25, 135, 84) if wc["pct"] >= 0 else (220, 53, 69)
-        val_w = draw.textlength(val_text, font=font_change_val)
-        draw.text((bx + box_w / 2 - val_w / 2, strip_y + 60), val_text,
-                   font=font_change_val, fill=val_color)
+            u = (t0 - 0.5) / 0.5
+            c = (255, int(212 + u * (107 - 212)), int(59 + u * (107 - 59)))
+        d.arc(bbox, start=180 + t0 * 180, end=180 + t1 * 180, fill=c, width=thickness)
 
-    # --- Top-2 drivers ---
-    drv_y = strip_y + 170
-    draw.text((50, drv_y), "Biggest Drivers This Week", font=font_driver_head, fill=TEXT_DARK)
-    drv_y += 46
-    for d in top_drivers:
-        sign_d = "+" if d["value"] > 0 else ""
-        line = f"• {d['label']}: {sign_d}{d['value']:.1f} B$/Week"
-        draw.text((50, drv_y), line, font=font_driver, fill=TEXT_DARK)
-        drv_y += 42
+    percentile = index_data["percentile"]
+    needle_deg = 180 + (percentile / 100) * 180
+    needle_rad = math.radians(needle_deg)
+    nl = radius - thickness / 2 - 6
+    nx, ny = cx + nl * math.cos(needle_rad), pivot_y + nl * math.sin(needle_rad)
+    d.line([(cx, pivot_y), (nx, ny)], fill=TEXT_DARK, width=7)
+    d.ellipse([cx - 14, pivot_y - 14, cx + 14, pivot_y + 14], fill=TEXT_DARK)
 
-    footer_text = "Source: FRED, Office of Financial Research (OFR)"
-    draw.text((50, drv_y + 30), footer_text, font=font_footer, fill=TEXT_GRAY)
+    d.text((cx - radius + 5, pivot_y + 14), "UNDERSUPPLY", font=f_edge, fill=TEXT_FAINT)
+    lbl = "FLOODED"
+    lw = d.textlength(lbl, font=f_edge)
+    d.text((cx + radius - 5 - lw, pivot_y + 14), lbl, font=f_edge, fill=TEXT_FAINT)
 
-    img = _autocrop(img, margin=30)
+    # --- number + plain-English explanation BELOW the gauge (matches site layout) ---
+    ny2 = pivot_y + 70
+    num_text = str(percentile)
+    nw = d.textlength(num_text, font=f_val)
+    uw = d.textlength("/100", font=f_unit)
+    total_w = nw + 10 + uw
+    d.text((cx - total_w / 2, ny2), num_text, font=f_val, fill=BLUE)
+    d.text((cx - total_w / 2 + nw + 10, ny2 + 50), "/100", font=f_unit, fill=TEXT_FAINT)
+
+    explain_lines = [
+        "Shows where this week ranks vs. the past year of liquidity flow —",
+        "0 = most drained, 100 = most flooded.",
+    ]
+    ey = ny2 + 118
+    for line in explain_lines:
+        ew = d.textlength(line, font=f_explain)
+        d.text((cx - ew / 2, ey), line, font=f_explain, fill=TEXT_FAINT)
+        ey += 26
+
+    status = index_data["status"]
+    sw = d.textlength(status["text_en"].upper(), font=f_badge)
+    badge_w = sw + 56
+    by = ey + 42
+    d.rounded_rectangle([cx - badge_w / 2, by, cx + badge_w / 2, by + 50], radius=25, fill=status["bg"])
+    d.text((cx - sw / 2, by + 12), status["text_en"].upper(), font=f_badge, fill=status["color"])
+
+    # --- 1W/4W/12W/52W change strip, in percentile points (%p) — matches site ---
+    strip_y = by + 95
+    d.text((pad, strip_y), "Index Change by Window (percentile points)", font=f_label, fill=TEXT_DARK)
+    strip_y += 52
+    windows = index_data["window_changes"]
+    n = len(windows)
+    gap = 20
+    box_w = (CANVAS_W - 2 * pad - gap * (n - 1)) / n
+    for i, wc in enumerate(windows):
+        bx = pad + i * (box_w + gap)
+        d.rounded_rectangle([bx, strip_y, bx + box_w, strip_y + 118], radius=16,
+                             fill=(247, 248, 250), outline=CARD_BORDER, width=2)
+        lw = d.textlength(wc["label"], font=f_change_label)
+        d.text((bx + box_w / 2 - lw / 2, strip_y + 16), wc["label"], font=f_change_label, fill=TEXT_GRAY)
+        if wc["delta_pp"] is None:
+            val_text, vcolor = "N/A", TEXT_GRAY
+        else:
+            val_text = f"{'+' if wc['delta_pp'] > 0 else ''}{wc['delta_pp']}%p"
+            vcolor = GREEN_TX if wc["delta_pp"] >= 0 else RED_TX
+        vw = d.textlength(val_text, font=f_change_val)
+        d.text((bx + box_w / 2 - vw / 2, strip_y + 55), val_text, font=f_change_val, fill=vcolor)
+
+    dy = strip_y + 160
+    d.text((pad, dy), "Biggest Drivers This Week", font=f_driver_head, fill=TEXT_DARK)
+    dy += 46
+    for drv in top_drivers:
+        sign_d = "+" if drv["value"] > 0 else ""
+        line = f"• {drv['label']}: {sign_d}{drv['value']:.1f} B$/Week"
+        d.text((pad, dy), line, font=f_driver, fill=TEXT_BODY)
+        dy += 40
+
+    _footer(d, pad, H - 40 - 45, f_footer)
+
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.save(out_path)
     return out_path
 
 
-def create_knowledge_card(
+# ---------------------------------------------------------------------------
+# Reusable gradient-fill line chart card (Wednesday knowledge, urgent scan,
+# and Monday's secondary NETMARKETFLOW trend chart)
+# ---------------------------------------------------------------------------
+def create_metric_chart_card(
     title: str,
+    ticker: str,
     chart_values: List[float],
     chart_dates: List[str],
     unit: str,
-    ticker: str,
+    badge_text: Optional[str] = None,
+    subtitle: Optional[str] = None,
     site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/knowledge_card.png",
+    out_path: str = "output/metric_chart_card.png",
 ) -> str:
-    """Wednesday content: clean 52-week (or however much history exists)
-    line chart for one indicator, used alongside the plain-language
-    explainer text (see lib/knowledge_content.py) written in the caption."""
-    W, H = 1080, 900
-    img = Image.new("RGB", (W, H), color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    ACCENT = (41, 82, 227)
+    """Single-indicator gradient-fill line chart, 'Candidate C' style."""
+    H = 1080
+    img, d = _new_card(H)
+    pad = 70
 
-    is_up = len(chart_values) >= 2 and chart_values[-1] >= chart_values[0]
-    line_color = (25, 135, 84) if is_up else (220, 53, 69)
+    f_brand = _font(28, "Bold")
+    f_ticker = _font(24, "SemiBold")
+    f_title = _font(36, "SemiBold")
+    f_subtitle = _font(22, "Regular")
+    f_val = _font(72, "ExtraBold")
+    f_unit = _font(26, "Medium")
+    f_badge = _font(22, "Bold")
+    f_axis = _font(19, "Regular")
+    f_footer = _font(18, "Regular")
 
-    draw.rectangle([0, 0, W, 110], fill=ACCENT)
-    font_brand = _font(30, "Bold")
-    font_ticker = _font(26, "Regular")
-    font_title = _font(38, "SemiBold")
-    font_value = _font(58, "ExtraBold")
-    font_unit = _font(26, "Medium")
-    font_axis = _font(20, "Regular")
-    font_footer = _font(20, "Regular")
+    _header(d, pad, f_brand, f_ticker, ticker, site_name)
 
-    draw.text((50, 36), site_name, font=font_brand, fill="white")
-    tk = f"${ticker}"
-    tk_w = draw.textlength(tk, font=font_ticker)
-    draw.text((W - 50 - tk_w, 42), tk, font=font_ticker, fill=(210, 216, 245))
-
-    title_lines = _wrap_text(draw, title, font_title, W - 100)
+    title_lines = _wrap_text(d, title, f_title, CANVAS_W - 2 * pad)
     ty = 150
     for line in title_lines[:2]:
-        draw.text((50, ty), line, font=font_title, fill=TEXT_DARK)
-        ty += 48
+        d.text((pad, ty), line, font=f_title, fill=TEXT_BODY)
+        ty += 44
 
+    if subtitle:
+        d.text((pad, ty + 4), subtitle, font=f_subtitle, fill=TEXT_FAINT)
+        ty += 34
+
+    vy = ty + 15
     if chart_values:
         current = chart_values[-1]
-        val_text = f"{current:,.2f}{unit}" if unit == "%" else f"{current:,.1f}"
-        vy = ty + 20
-        draw.text((50, vy), val_text, font=font_value, fill=line_color)
-        if unit != "%":
-            vw = draw.textlength(val_text, font=font_value)
-            draw.text((50 + vw + 15, vy + 20), unit, font=font_unit, fill=TEXT_GRAY)
-        chart_top = vy + 100
-    else:
-        chart_top = ty + 60
+        val_text = f"{current:,.2f}" if unit == "%" else f"{current:,.1f}"
+        d.text((pad, vy), val_text, font=f_val, fill=BLUE)
+        vw = d.textlength(val_text, font=f_val)
+        unit_label = unit if unit == "%" else f" {unit}"
+        d.text((pad + vw + 12, vy + 35), unit_label, font=f_unit, fill=TEXT_GRAY)
 
-    chart_left, chart_right = 50, W - 50
-    chart_bottom = chart_top + 340
-    weeks_label = f"Last {len(chart_values)} weeks" if chart_values else ""
+    if badge_text:
+        bw = d.textlength(badge_text, font=f_badge) + 28
+        d.rounded_rectangle([CANVAS_W - pad - bw, vy + 15, CANVAS_W - pad, vy + 15 + 42],
+                             radius=21, fill=GREEN_BG)
+        d.text((CANVAS_W - pad - bw + 14, vy + 25), badge_text, font=f_badge, fill=GREEN_TX)
+
+    cl, cr, ct, cb = pad, CANVAS_W - pad, vy + 120, vy + 120 + 340
     if len(chart_values) >= 2:
         vmin, vmax = min(chart_values), max(chart_values)
         vrange = (vmax - vmin) or 1.0
         n = len(chart_values)
-        step = (chart_right - chart_left) / (n - 1)
-        points = []
-        for i, v in enumerate(chart_values):
-            x = chart_left + i * step
-            y = chart_bottom - ((v - vmin) / vrange) * (chart_bottom - chart_top)
-            points.append((x, y))
-        draw.line(points, fill=line_color, width=5, joint="curve")
-        lx, ly = points[-1]
-        draw.ellipse([lx - 8, ly - 8, lx + 8, ly + 8], fill=line_color)
-        for idx in (0, n // 2, n - 1):
-            label = chart_dates[idx][5:]
-            lw = draw.textlength(label, font=font_axis)
-            lx2 = chart_left + idx * step
-            draw.text((max(0, lx2 - lw / 2), chart_bottom + 15), label, font=font_axis, fill=TEXT_GRAY)
+        step = (cr - cl) / (n - 1)
+        pts = [(cl + i * step, cb - ((v - vmin) / vrange) * (cb - ct)) for i, v in enumerate(chart_values)]
 
-    draw.text((50, chart_bottom + 50), weeks_label, font=font_axis, fill=TEXT_GRAY)
-    footer_text = "Source: FRED  ·  Weekly knowledge series — US Liquidity Dashboard"
-    draw.text((50, H - 50), footer_text, font=font_footer, fill=TEXT_GRAY)
+        area = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ad = ImageDraw.Draw(area)
+        ad.polygon(pts + [(cr, cb), (cl, cb)], fill=(37, 99, 235, 55))
+        img.paste(Image.alpha_composite(img.convert("RGBA"), area).convert("RGB"))
+        d = ImageDraw.Draw(img)
 
-    img = _autocrop(img, margin=30)
+        d.line(pts, fill=BLUE, width=5, joint="curve")
+        lx, ly = pts[-1]
+        d.ellipse([lx - 8, ly - 8, lx + 8, ly + 8], fill=BLUE, outline="white", width=3)
+
+        d.text((cl, cb + 14), chart_dates[0][5:] if chart_dates else "", font=f_axis, fill=TEXT_FAINT)
+        lbl = "Now"
+        lw = d.textlength(lbl, font=f_axis)
+        d.text((cr - lw, cb + 14), lbl, font=f_axis, fill=TEXT_FAINT)
+
+    weeks_label = f"Last {len(chart_values)} weeks" if chart_values else "Not enough data"
+    d.text((pad, cb + 48), weeks_label, font=f_axis, fill=TEXT_FAINT)
+
+    _footer(d, pad, H - 78, f_footer)
+
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.save(out_path)
     return out_path
 
 
-def create_weekly_recap_card(
-    history: List[Dict],
+# ---------------------------------------------------------------------------
+# Tuesday: this month's FRED release calendar
+# ---------------------------------------------------------------------------
+def create_calendar_card(
+    events: List[Dict],
+    month_label: str,
     site_name: str = "US Liquidity Dashboard",
-    out_path: str = "output/weekly_recap_card.png",
+    out_path: str = "output/calendar_card.png",
 ) -> str:
-    """Friday content: a simple bar chart of the last N weeks' net market flow."""
-    img = Image.new("RGB", CANVAS_SIZE, color=BG_COLOR)
-    draw = ImageDraw.Draw(img)
-    W, H = CANVAS_SIZE
+    """`events` items: {"name": str, "date": date, "is_past": bool}."""
+    row_h = 84
+    H = 420 + max(1, len(events)) * row_h
+    H = min(H, 1500)
+    img, d = _new_card(H)
+    pad = 70
 
-    UP = (25, 135, 84)
-    DOWN = (220, 53, 69)
+    f_brand = _font(28, "Bold")
+    f_ticker = _font(24, "SemiBold")
+    f_title = _font(34, "SemiBold")
+    f_date = _font(26, "Bold")
+    f_name = _font(24, "Regular")
+    f_footer = _font(19, "Regular")
+    f_empty = _font(24, "Regular")
 
-    draw.rectangle([0, 0, W, 140], fill=(41, 82, 227))
-    font_brand = _font(34, "Bold")
-    font_title = _font(38, "SemiBold")
-    font_axis = _font(22, "Regular")
-    font_footer = _font(22, "Regular")
-    font_val = _font(20, "Medium")
+    _header(d, pad, f_brand, f_ticker, "CALENDAR", site_name)
+    d.text((pad, 150), f"{month_label} — Major US Economic Releases", font=f_title, fill=TEXT_DARK)
 
-    draw.text((50, 50), site_name, font=font_brand, fill="white")
-    draw.text((50, 180), "Weekly Recap — Net Liquidity Flow", font=font_title, fill=TEXT_DARK)
+    y = 230
+    if not events:
+        d.text((pad, y), "No major releases on the calendar this month.", font=f_empty, fill=TEXT_GRAY)
+        y += 60
+    else:
+        for e in events[:12]:
+            past = e["is_past"]
+            row_bg = (247, 248, 250) if past else (255, 255, 255)
+            row_border = CARD_BORDER if past else BLUE
+            d.rounded_rectangle([pad, y, CANVAS_W - pad, y + row_h - 18], radius=14,
+                                 fill=row_bg, outline=row_border, width=2)
+            mark = "✅" if past else "🔜"
+            d.text((pad + 20, y + 18), mark, font=f_date, fill=TEXT_DARK)
+            date_text = e["date"].strftime("%b %d") + f" ({['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][e['date'].weekday()]})"
+            d.text((pad + 70, y + 12), date_text, font=f_date, fill=BLUE if not past else TEXT_GRAY)
+            d.text((pad + 70, y + 44), e["name"], font=f_name, fill=TEXT_BODY)
+            y += row_h
 
-    recent = history[-8:] if len(history) > 8 else history
-    if not recent:
-        draw.text((50, 300), "Not enough data to build a recap this week.", font=font_axis, fill=TEXT_GRAY)
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        img.save(out_path)
-        return out_path
+    _footer(d, pad, H - 60, f_footer, "Source: FRED official Release Calendar API")
 
-    chart_left, chart_right = 80, W - 80
-    chart_top, chart_bottom = 280, 780
-    zero_y = (chart_top + chart_bottom) // 2
-    draw.line([(chart_left, zero_y), (chart_right, zero_y)], fill=LINE_COLOR, width=2)
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    img.save(out_path)
+    return out_path
 
-    max_abs = max(abs(r["net_market_flow"]) for r in recent) or 1.0
-    n = len(recent)
-    bar_area_w = chart_right - chart_left
-    bar_w = bar_area_w / n * 0.55
-    gap = bar_area_w / n
 
-    for i, r in enumerate(recent):
-        val = r["net_market_flow"]
-        cx = chart_left + gap * i + gap / 2
-        bar_h = (abs(val) / max_abs) * ((chart_bottom - chart_top) / 2 - 20)
-        color = UP if val >= 0 else DOWN
-        if val >= 0:
-            draw.rounded_rectangle([cx - bar_w / 2, zero_y - bar_h, cx + bar_w / 2, zero_y], radius=6, fill=color)
-        else:
-            draw.rounded_rectangle([cx - bar_w / 2, zero_y, cx + bar_w / 2, zero_y + bar_h], radius=6, fill=color)
+# ---------------------------------------------------------------------------
+# Friday: Term of the Day (illustrative icon card — no numeric series)
+# ---------------------------------------------------------------------------
+def create_term_icon_card(
+    term: str,
+    definition: str,
+    badge: str,
+    site_name: str = "US Liquidity Dashboard",
+    out_path: str = "output/term_icon_card.png",
+) -> str:
+    H = 1080
+    img, d = _new_card(H)
+    pad = 70
 
-        label = r["as_of_date"][5:]  # MM-DD
-        lw = draw.textlength(label, font=font_axis)
-        draw.text((cx - lw / 2, chart_bottom + 15), label, font=font_axis, fill=TEXT_GRAY)
+    f_brand = _font(28, "Bold")
+    f_ticker = _font(24, "SemiBold")
+    f_term = _font(42, "ExtraBold")
+    f_body = _font(28, "Regular")
+    f_footer = _font(19, "Regular")
 
-        val_text = f"{'+' if val > 0 else ''}{val:.0f}"
-        vw = draw.textlength(val_text, font=font_val)
-        val_y = zero_y - bar_h - 28 if val >= 0 else zero_y + bar_h + 8
-        draw.text((cx - vw / 2, val_y), val_text, font=font_val, fill=TEXT_DARK)
+    _header(d, pad, f_brand, f_ticker, "TERM", site_name)
 
-    latest = recent[-1]["net_market_flow"]
-    avg = sum(r["net_market_flow"] for r in recent) / len(recent)
-    summary = f"Latest: {latest:+.1f} B$/Week   ·   {len(recent)}-week avg: {avg:+.1f} B$/Week"
-    draw.text((50, 830), summary, font=font_title, fill=TEXT_DARK)
+    # monogram badge inside a soft circle (Inter has no emoji glyphs, so a
+    # text monogram is the reliable choice here rather than a pictogram)
+    circle_cx, circle_cy, circle_r = CANVAS_W // 2, 330, 130
+    d.ellipse([circle_cx - circle_r, circle_cy - circle_r, circle_cx + circle_r, circle_cy + circle_r],
+              fill=LIGHTBLUE)
+    badge_font_size = 64 if len(badge) <= 4 else (48 if len(badge) <= 6 else 36)
+    f_monogram = _font(badge_font_size, "ExtraBold")
+    bw = d.textlength(badge, font=f_monogram)
+    d.text((circle_cx - bw / 2, circle_cy - badge_font_size / 1.6), badge, font=f_monogram, fill=BLUE)
 
-    footer_text = "Source: FRED, Office of Financial Research (OFR)  ·  Auto-updated weekly"
-    draw.text((50, H - 60), footer_text, font=font_footer, fill=TEXT_GRAY)
+    term_lines = _wrap_text(d, term, f_term, CANVAS_W - 2 * pad)
+    ty = 510
+    for line in term_lines[:2]:
+        tw = d.textlength(line, font=f_term)
+        d.text((circle_cx - tw / 2, ty), line, font=f_term, fill=TEXT_DARK)
+        ty += 54
+
+    body_lines = _wrap_text(d, definition, f_body, CANVAS_W - 2 * pad)
+    by = ty + 30
+    for line in body_lines[:8]:
+        d.text((pad, by), line, font=f_body, fill=TEXT_BODY)
+        by += 42
+
+    _footer(d, pad, H - 60, f_footer, "US Liquidity Dashboard — Finance Glossary")
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.save(out_path)

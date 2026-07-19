@@ -2,51 +2,58 @@
 """
 Main script, run once per day (see .github/workflows/daily_post.yml).
 
-CONTENT ROTATION (redesigned):
-    Monday    : Weekly Liquidity Result — speedometer gauge + 1W-52W % change
-                strip + the top-2 drivers behind this week's number. NO date/
-                "updated" text on the card by design (evergreen, not stale-
+CONTENT ROTATION:
+    Monday    : Weekly Liquidity Index — TWO images: (1) the site's actual
+                percentile-based gauge (dome-up speedometer, 0=UNDERSUPPLY,
+                100=FLOODED) + top-2 drivers, and (2) a 52-week trend chart
+                of the underlying NETMARKETFLOW figure. NO date/"updated"
+                text on the gauge card by design (evergreen, not stale-
                 looking). Posted once a week only — no repeat daily snapshot.
-    Tuesday   : This month's major US econ release calendar (FRED official
-                Release Calendar API) — CPI/NFP/FOMC/GDP/PCE dates for the
-                current calendar month, past events marked done.
-    Wednesday : Knowledge post — rotates weekly between a liquidity-indicator
-                concept (TGA / Fed balance sheet / RRP / bank reserves) and a
-                rate concept (Fed Funds / 10Y / 2Y / curve spread / SOFR),
-                each shown with a 52-week (or max available) chart and a
-                plain-language explainer of how it connects to liquidity.
-    Friday    : Term of the Day (finance glossary) — light, distinct content
-                that doesn't repeat the liquidity number.
+    Tuesday   : This month's econ calendar — a calendar IMAGE (all events,
+                past ones checked off) + a caption listing the top-3 most
+                important upcoming releases with an LLM-written explanation
+                of why the single most important one matters.
+    Wednesday
+    & Thursday: IDENTICAL routine (same function, same chart style, same
+                posting time) — a knowledge post rotating weekly between a
+                liquidity-indicator concept and a rate concept, each with a
+                52-week chart card and an LLM "why it matters" line.
+    Friday    : Term of the Day — an illustrated card (text monogram badge,
+                since the bundled font has no emoji glyphs) with an LLM
+                "why it matters" line.
     Sunday    : Community engagement — native poll on both Telegram and
                 Threads (Threads added poll_attachment support April 2025).
-    Thu/Sat   : No scheduled main post — the urgent scanner below still runs.
+    Saturday  : No scheduled main post — the urgent scanner below still runs.
     Always    : Unified urgent scanner (lib/signal_scanner.py) — scans EVERY
                 monitored series (liquidity + rates + the combined net-flow
                 metric) for the single most notable record/streak/turning-
-                point/big-move signal, and posts it immediately, independent
-                of the weekday schedule above. Posts nothing if nothing is
-                genuinely notable that day (quality over forced volume).
+                point/big-move signal, posts it with an LLM "why it matters"
+                line, independent of the weekday schedule above. Posts
+                nothing if nothing is genuinely notable that day.
 
-THREADS LINK STRATEGY: outbound links are widely reported to suppress reach
-on Threads, so every Threads post (Monday/Tuesday/Wednesday/Friday/urgent)
-keeps its main body link-free and posts the site link as the FIRST REPLY
-instead (see _mirror_to_threads() below). Telegram is unaffected and keeps
-the link inline as before, since Telegram has no such penalty.
-
-POSTING TIMES (see .github/workflows/daily_post.yml for the actual cron):
-    Chosen to land within the general "best time to post" window widely
-    reported for Western/English-speaking social audiences (mid-morning to
-    early afternoon ET on weekdays), spread across Monday / Wednesday /
-    Friday / Sunday so the four mandatory posts don't cluster on the same
-    day. Cron times are UTC and approximate — they drift by an hour across
-    US Daylight Saving transitions; adjust in the workflow file if you want
-    to correct for that manually.
+EXPOSURE-STRATEGY FIXES APPLIED (see README for the full write-up):
+    1. NO HASHTAGS anywhere, on either platform.
+    2. Every scheduled post now ALWAYS carries an image (previously Tuesday/
+       Friday were text-only). The Threads image-hosting reliability bug
+       (image silently failing -> falling back to text) is also fixed —
+       see lib/github_image_host.py's URL-liveness polling.
+    3. Threads: outbound link posted as the FIRST REPLY, never in the main
+       body (see _mirror_to_threads / _split_link_line below) — unchanged
+       from before, still applied everywhere.
+    4. A closing, genuinely open-ended question is added to Wednesday/
+       Thursday knowledge posts and Sunday's poll (not every post, to avoid
+       feeling forced) — Threads is reported to weight replies/reposts more
+       than likes.
+    5. Posting-frequency consistency — unchanged, the fixed weekly schedule
+       already satisfies this.
+    6. Manual, non-automatable items (seeding initial engagement, the
+       reply-guy strategy) are left as human/semi-manual tools — see
+       _send_daily_reply_toolkit() below, sent privately to ADMIN_CHAT_ID.
+    7. @-mention spam — never used anywhere in this codebase; nothing to fix.
 
 Platforms:
     Telegram  : full support (text, photo, native poll)
-    Threads   : text-only posts (no native poll support in the API — see
-                lib/post_threads.py docstring). Mirrors the same content as
-                an open question instead of a poll where applicable.
+    Threads   : text/image posts + native polls (poll_attachment, April 2025)
 
 Local test:
     export TELEGRAM_BOT_TOKEN=xxxx
@@ -65,32 +72,35 @@ import os
 import sys
 import traceback
 from datetime import datetime, timezone
+from typing import Optional
 
 from lib.fetch_data import fetch_all, FetchError
 from lib.compute_liquidity import (
     compute_net_market_flow,
-    classify_state,
     compute_net_market_flow_history,
-    compute_gauge_angle,
-    compute_window_changes,
+    compute_liquidity_index,
     compute_top_drivers,
 )
 from lib.generate_card import (
     create_gauge_card,
-    create_knowledge_card,
-    create_term_card,
-    create_fact_card,
+    create_metric_chart_card,
+    create_calendar_card,
+    create_term_icon_card,
 )
 from lib.post_telegram import send_photo, send_text, send_poll, TelegramError
-from lib.post_threads import publish_text_post, publish_image_post, publish_poll_post, reply_to_post, ThreadsError
+from lib.post_threads import (
+    publish_text_post, publish_image_post, publish_poll_post, reply_to_post, ThreadsError,
+)
 from lib.github_image_host import publish_image_to_repo, ImageHostError
 from lib.terms import get_term_of_the_day, format_term_caption
 from lib.polls import pick_open_question_for_sunday, GENERIC_LIQUIDITY_POLLS
-from lib.llm_content import generate_open_question, generate_fact_caption
+from lib.llm_content import generate_fact_caption, generate_why_it_matters, generate_calendar_commentary
 from lib.reply_templates import generate_reply_snippets, format_reply_toolkit_message
 from lib.signal_scanner import get_top_signal
 from lib.knowledge_content import build_knowledge_content
-from lib.fetch_calendar import get_events_this_month, format_monthly_calendar_caption, CalendarError
+from lib.fetch_calendar import (
+    get_events_this_month, get_top_upcoming_events, CalendarError,
+)
 
 # --- IMPORTANT: confirm this matches your actual live English page URL ---
 SITE_URL = os.environ.get("SITE_URL", "https://americayoudongsung.netlify.app/en")
@@ -99,34 +109,26 @@ MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY, SUNDAY = range(7)
 
 
 # ---------------------------------------------------------------------------
-# Threads helper — never let a Threads failure break the Telegram post.
-#
-# LINK STRATEGY: Threads' algorithm is widely reported to suppress reach on
-# posts whose main body contains an outbound link. So for Threads specifically
-# (NOT Telegram, which has no such penalty), the site link is stripped out of
-# the main post and instead posted as the FIRST REPLY right after publishing —
-# the main post stays link-free and gets full organic reach, while anyone who
-# wants the link taps into the reply.
+# Threads helpers — never let a Threads failure break the Telegram post.
+# LINK STRATEGY: see module docstring point 3.
 # ---------------------------------------------------------------------------
 def _split_link_line(caption: str, site_url: str) -> tuple[str, str]:
-    """Splits a caption built with a '...\\n\\n👉 {site_url}\\n#hashtags'-style
-    ending into (body_without_link, link_reply_text). The body gets a short
-    non-URL hint telling readers the link is in the reply; hashtags (if any)
-    stay in the body since they aren't links and don't carry the same
-    suppression risk."""
     lines = caption.split("\n")
     kept = [ln for ln in lines if site_url not in ln]
     body = "\n".join(kept).rstrip()
     if body:
         body += "\n\n🔗 Full live dashboard — link in the first reply 👇"
-    link_text = f"🔗 {site_url}"
-    return body, link_text
+    return body, f"🔗 {site_url}"
 
 
-def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str | None = SITE_URL) -> None:
+def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str | None = SITE_URL) -> Optional[str]:
+    """Publishes the main Threads post (link-free body) and posts the link as
+    a reply. Returns the published post id (or None if Threads isn't
+    configured / the post failed) so callers can attach further replies
+    (e.g. Monday's second trend-chart image)."""
     if not os.environ.get("THREADS_USER_ID") or not os.environ.get("THREADS_ACCESS_TOKEN"):
         print("[Threads] Not configured, skipping mirror post.")
-        return
+        return None
 
     body, link_text = _split_link_line(text, site_url) if site_url and site_url in text else (text, None)
 
@@ -149,7 +151,7 @@ def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str |
             print("[Threads] Mirrored (text-only) successfully.")
         except ThreadsError as e:
             print(f"[Threads] Mirror failed (non-fatal): {e}", file=sys.stderr)
-            return
+            return None
 
     if post_id and link_text:
         try:
@@ -157,6 +159,22 @@ def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str |
             print("[Threads] Link posted as first reply.")
         except ThreadsError as e:
             print(f"[Threads] Reply-with-link failed (non-fatal, main post still up): {e}", file=sys.stderr)
+
+    return post_id
+
+
+def _reply_with_image(post_id: str | None, text: str, image_path: str) -> None:
+    """Attaches a second image as a reply to an existing Threads post — used
+    for Monday's NETMARKETFLOW trend chart, so the main feed shows one post
+    per slot while the thread carries both visuals."""
+    if not post_id or not os.environ.get("THREADS_USER_ID") or not os.environ.get("THREADS_ACCESS_TOKEN"):
+        return
+    try:
+        image_url = publish_image_to_repo(image_path)
+        reply_to_post(post_id, text, image_url=image_url)
+        print("[Threads] Trend chart posted as a second reply.")
+    except (ImageHostError, ThreadsError) as e:
+        print(f"[Threads] Trend-chart reply failed (non-fatal): {e}", file=sys.stderr)
 
 
 def _strip_html(text: str) -> str:
@@ -166,122 +184,168 @@ def _strip_html(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Monday: Weekly Liquidity Result (gauge + % change strip + top drivers)
+# Monday: Weekly Liquidity Index (percentile gauge) + NETMARKETFLOW trend
 # ---------------------------------------------------------------------------
 def run_monday_liquidity_result(data_store: dict | None = None) -> int:
-    print("[1/4] Fetching data...")
+    print("[1/5] Fetching data...")
     data_store = data_store or fetch_all()
 
-    print("[2/4] Computing this week's liquidity result...")
+    print("[2/5] Computing this week's Liquidity Index (percentile-based, matches the site)...")
+    index_data = compute_liquidity_index(data_store)
     result = compute_net_market_flow(data_store)
-    state = classify_state(result["net_market_flow"])
-    gauge_angle = compute_gauge_angle(result["net_market_flow"])
-    window_changes = compute_window_changes(data_store)
     top_drivers = compute_top_drivers(result, top_n=2)
-    print(f"  -> {result['net_market_flow']:+.1f} B$/Week — {state['text_en']}")
+    print(f"  -> {index_data['percentile']}/100 — {index_data['status']['text_en']}")
 
-    print("[3/4] Generating gauge card (no date, auto-cropped)...")
-    image_path = create_gauge_card(
-        net_market_flow=result["net_market_flow"],
-        state=state,
-        gauge_angle=gauge_angle,
-        window_changes=window_changes,
-        top_drivers=top_drivers,
-    )
+    print("[3/5] Generating gauge card (no date, dome-up, matches site geometry)...")
+    gauge_path = create_gauge_card(index_data, top_drivers)
 
     driver_sentence = " and ".join(
         f"{d['label']} ({'+' if d['value'] > 0 else ''}{d['value']:.1f} B$/Wk)" for d in top_drivers
     )
-    sign = "+" if result["net_market_flow"] > 0 else ""
-    caption = (
-        f"{state['emoji']} <b>US Market Liquidity — Weekly Result</b>\n\n"
-        f"Net flow: <b>{sign}{result['net_market_flow']} B$/Week</b> — {state['text_en']}\n\n"
+    why = generate_why_it_matters(
+        "This week's Liquidity Index",
+        f"Index: {index_data['percentile']}/100 ({index_data['status']['text_en']}). "
+        f"Driven mainly by {driver_sentence}.",
+    )
+    caption1 = (
+        f"<b>US Market Liquidity — Weekly Index</b>\n\n"
+        f"Index: <b>{index_data['percentile']}/100</b> — {index_data['status']['text_en']}\n\n"
         f"Driven mainly by {driver_sentence}.\n\n"
-        f"👉 For full details, check the page: {SITE_URL}\n"
-        f"#USLiquidity #FederalReserve"
+        f"<i>Why it matters:</i> {why}\n\n"
+        f"👉 For full details, check the page: {SITE_URL}"
     )
 
-    print("[4/4] Posting...")
-    send_photo(image_path, caption)
-    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+    print("[4/5] Posting the gauge...")
+    send_photo(gauge_path, caption1)
+    post_id = _mirror_to_threads(_strip_html(caption1), image_path=gauge_path)
+
+    print("[5/5] Building + posting the NETMARKETFLOW 52-week trend chart...")
+    history = compute_net_market_flow_history(data_store, weeks=52)
+    chart_values = [h["net_market_flow"] for h in history]
+    chart_dates = [h["as_of_date"] for h in history]
+    trend_path = create_metric_chart_card(
+        title="Market Total Net Liquidity Supply (NETMARKETFLOW)",
+        ticker="NETMARKETFLOW",
+        chart_values=chart_values,
+        chart_dates=chart_dates,
+        unit="B$/Wk",
+        subtitle="The underlying weekly dollar figure behind this week's Index.",
+    )
+    caption2 = (
+        "<b>52-Week Trend — Net Market Liquidity Flow</b>\n\n"
+        "The raw weekly dollar figure the Liquidity Index above is ranked against."
+    )
+    send_photo(trend_path, caption2)
+    _reply_with_image(post_id, "📈 " + caption2.split('\n\n')[1], trend_path)
 
     print("Done! (Monday liquidity result)")
     return 0
 
 
 # ---------------------------------------------------------------------------
-# Tuesday: this month's major US econ release calendar (FRED)
+# Tuesday: this month's econ calendar (image) + top-3 + LLM commentary
 # ---------------------------------------------------------------------------
 def run_tuesday_calendar() -> int:
-    print("[1/2] Fetching this month's FRED release calendar...")
+    print("[1/4] Fetching this month's FRED release calendar...")
     try:
         events = get_events_this_month()
     except CalendarError as e:
         print(f"[WARN] Calendar fetch failed, skipping gracefully: {e}", file=sys.stderr)
         return 0
-
     print(f"  -> {len(events)} events this month")
-    caption = format_monthly_calendar_caption(events, SITE_URL)
 
-    print("[2/2] Posting...")
-    send_text(caption)
-    _mirror_to_threads(_strip_html(caption))
+    print("[2/4] Ranking the top-3 upcoming releases...")
+    top3 = get_top_upcoming_events(events, n=3)
+
+    why = ""
+    if top3:
+        print(f"  -> most important: {top3[0]['name']} on {top3[0]['date']}")
+        why = generate_calendar_commentary(top3[0], top3)
+
+    print("[3/4] Generating the calendar card image...")
+    month_label = datetime.now(timezone.utc).strftime("%B %Y")
+    cal_path = create_calendar_card(events, month_label)
+
+    print("[4/4] Posting...")
+    lines = [f"<b>{month_label} — What to Watch</b>\n"]
+    if top3:
+        lines.append("Top releases this month:")
+        for i, e in enumerate(top3, 1):
+            lines.append(f"{i}. {e['name']} — {e['date'].strftime('%b %d')}")
+        lines.append("")
+        lines.append(f"<i>Why it matters:</i> {why}")
+    else:
+        lines.append("No major upcoming releases left this month.")
+    lines.append("")
+    lines.append(f"👉 Full calendar: {SITE_URL}")
+    caption = "\n".join(lines)
+
+    send_photo(cal_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=cal_path)
 
     print("Done! (Tuesday calendar)")
     return 0
 
 
 # ---------------------------------------------------------------------------
-# Wednesday: Knowledge rotation (liquidity concepts <-> rate concepts)
+# Wednesday AND Thursday: IDENTICAL knowledge routine (same function, same
+# chart style, same posting time — see module docstring).
 # ---------------------------------------------------------------------------
-def run_wednesday_knowledge(data_store: dict | None = None) -> int:
-    print("[1/3] Fetching data...")
+def run_knowledge_content(data_store: dict | None = None) -> int:
+    print("[1/4] Fetching data...")
     data_store = data_store or fetch_all()
 
-    print("[2/3] Picking this week's knowledge topic...")
+    print("[2/4] Picking this week's knowledge topic...")
     content = build_knowledge_content(data_store)
     if not content:
         print("[WARN] No usable data for this week's topic, skipping gracefully.")
         return 0
     print(f"  -> ({content['pool']}) {content['title']}")
 
-    print("[3/3] Generating chart card + posting...")
-    image_path = create_knowledge_card(
+    print("[3/4] Generating chart card...")
+    chart_path = create_metric_chart_card(
         title=content["title"],
+        ticker=content["ticker"],
         chart_values=content["chart_values"],
         chart_dates=content["chart_dates"],
         unit=content["unit"],
-        ticker=content["ticker"],
     )
 
+    print("[4/4] Posting...")
+    why = generate_why_it_matters(
+        content["title"],
+        f"Current value: {content['current_value']}{content['unit']}. {content['explainer']}",
+    )
     caption = (
-        f"📚 <b>{content['title']}</b>\n\n"
+        f"<b>{content['title']}</b>\n\n"
         f"{content['explainer']}\n\n"
-        f"👉 Full charts & data: {SITE_URL}\n"
-        f"#USLiquidity #FederalReserve #{content['ticker']}"
+        f"<i>Why it matters right now:</i> {why}\n\n"
+        f"💬 Does this match what you're seeing elsewhere — curious how others read it.\n\n"
+        f"👉 Full charts & data: {SITE_URL}"
     )
-    send_photo(image_path, caption)
-    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+    send_photo(chart_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=chart_path)
 
-    print("Done! (Wednesday knowledge)")
+    print("Done! (knowledge content)")
     return 0
 
 
 # ---------------------------------------------------------------------------
-# Friday: Term of the Day (finance glossary)
+# Friday: Term of the Day (illustrated monogram card)
 # ---------------------------------------------------------------------------
 def run_friday_term() -> int:
     print("[1/3] Picking today's term...")
     term_entry = get_term_of_the_day()
     print(f"  -> {term_entry['term']}")
 
-    print("[2/3] Generating term card image...")
-    image_path = create_term_card(term_entry["term"], term_entry["definition"])
+    print("[2/3] Generating the illustrated term card...")
+    card_path = create_term_icon_card(term_entry["term"], term_entry["definition"], term_entry["badge"])
 
     print("[3/3] Posting...")
-    caption = format_term_caption(term_entry, SITE_URL)
-    send_photo(image_path, caption)
-    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+    why = generate_why_it_matters(term_entry["term"], term_entry["definition"])
+    caption = format_term_caption(term_entry, SITE_URL, why_it_matters=why)
+    send_photo(card_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=card_path)
 
     print("Done! (Friday term of the day)")
     return 0
@@ -297,8 +361,7 @@ def run_sunday_engagement() -> int:
     send_text(f"💬 <b>This Week's Question</b>\n\n{question}")
     send_poll(question, options)
 
-    print("[2/2] Mirroring to Threads as a NATIVE poll (Threads API added poll "
-          "support in April 2025 — poll_attachment param; see lib/post_threads.py)...")
+    print("[2/2] Mirroring to Threads as a NATIVE poll...")
     if os.environ.get("THREADS_USER_ID") and os.environ.get("THREADS_ACCESS_TOKEN"):
         try:
             publish_poll_post(f"💬 {question}", options)
@@ -325,31 +388,36 @@ def run_signal_scan(data_store: dict) -> int:
 
     print(f"  -> [{signal['category']}] {signal['signal_type']} on {signal['ticker']}: {signal['fact_text']}")
 
-    image_path = create_fact_card(
-        fact_text=signal["fact_text"],
+    chart_path = create_metric_chart_card(
+        title=signal["label"],
         ticker=signal["ticker"],
         chart_values=signal["chart_values"],
         chart_dates=signal["chart_dates"],
         unit=signal["unit"],
+        badge_text=signal["signal_type"].replace("_", " ").upper()[:20],
     )
 
+    why = generate_why_it_matters(signal["label"], signal["fact_text"])
     caption = generate_fact_caption(
         fact_text=signal["fact_text"],
         ticker=signal["ticker"],
         current_value=signal["current_value"],
         unit=signal["unit"],
         site_url=SITE_URL,
+        why_it_matters=why,
     )
 
-    send_photo(image_path, caption)
-    _mirror_to_threads(_strip_html(caption), image_path=image_path)
+    send_photo(chart_path, caption)
+    _mirror_to_threads(_strip_html(caption), image_path=chart_path)
     print("[Signal Scan] Posted.")
     return 0
 
 
 def _send_daily_reply_toolkit(data_store: dict | None = None) -> None:
     """Optional, private, manual-use-only: today's reply snippets for the
-    'reply guy' growth strategy. Never posted publicly."""
+    'reply guy' growth strategy (commenting on other accounts' posts —
+    effective for follower growth, but the actual commenting is a human
+    action, not something this bot does on its own). Never posted publicly."""
     try:
         admin_chat_id = os.environ.get("ADMIN_CHAT_ID")
         if not admin_chat_id:
@@ -377,13 +445,13 @@ def main() -> int:
             rc = run_monday_liquidity_result(data_store)
         elif weekday == TUESDAY:
             rc = run_tuesday_calendar()
-        elif weekday == WEDNESDAY:
-            rc = run_wednesday_knowledge(data_store)
+        elif weekday in (WEDNESDAY, THURSDAY):
+            rc = run_knowledge_content(data_store)
         elif weekday == FRIDAY:
             rc = run_friday_term()
         elif weekday == SUNDAY:
             rc = run_sunday_engagement()
-        else:  # Thursday, Saturday — no scheduled main post
+        else:  # Saturday — no scheduled main post
             print("No scheduled main post today; running the urgent scanner only.")
 
         # Unified urgent scanner — runs every day regardless of the branch
