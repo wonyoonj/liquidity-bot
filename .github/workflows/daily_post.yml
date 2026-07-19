@@ -10,12 +10,13 @@ on:
     # NOTE: UTC cron times drift by 1 hour relative to US Eastern Time across
     # Daylight Saving transitions (mid-March / early November) — nudge by an
     # hour then if you want to correct for it.
-    - cron: '0 14 * * 1'     # Monday    14:00 UTC (~10am ET)  -> Liquidity result
+    - cron: '0 14 * * 1'     # Monday    14:00 UTC (~10am ET)  -> Liquidity Index + trend chart
     - cron: '0 14 * * 2'     # Tuesday   14:00 UTC (~10am ET)  -> This month's econ calendar
     - cron: '0 15 * * 3'     # Wednesday 15:00 UTC (~11am ET)  -> Knowledge rotation
+    - cron: '0 15 * * 4'     # Thursday  15:00 UTC (~11am ET)  -> SAME routine as Wednesday, same time
     - cron: '0 16 * * 5'     # Friday    16:00 UTC (~12pm ET)  -> Term of the Day
     - cron: '0 18 * * 0'     # Sunday    18:00 UTC (~2pm ET)   -> Community engagement poll
-    - cron: '0 14 * * 4,6'   # Thu/Sat   14:00 UTC             -> urgent scanner only (no scheduled post)
+    - cron: '0 14 * * 6'     # Saturday  14:00 UTC             -> urgent scanner only (no scheduled post)
   workflow_dispatch: {}
 
 permissions:
