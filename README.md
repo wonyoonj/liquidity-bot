@@ -9,6 +9,7 @@ metric, not just the scheduled topic of the day.
 ```
 liquidity_bot/
 ├── daily_post.py                    # main dispatcher (runs daily via GitHub Actions)
+├── daily_news.py                    # SEPARATE daily news pick — own schedule, no links, see below
 ├── refresh_threads_token.py         # keeps the Threads token alive with zero manual work
 ├── requirements.txt
 ├── .env.example
@@ -25,6 +26,11 @@ liquidity_bot/
 │   ├── terms.py                      # Friday glossary content (with monogram badges)
 │   ├── knowledge_content.py          # Wednesday/Thursday liquidity/rate concept rotation
 │   ├── signal_scanner.py             # unified any-day urgent scanner (liquidity+rates+combined)
+│   ├── signal_state.py               # 14-day dedup for the urgent scanner (NEW)
+│   ├── news_sources.py               # RSS source list + relevance keywords (NEW)
+│   ├── news_fetcher.py               # fetches/parses/prefilters RSS candidates (NEW)
+│   ├── news_state.py                 # 45-day dedup for the daily news pick (NEW)
+│   ├── news_scanner.py               # orchestrates fetch -> dedup -> LLM pick (NEW)
 │   ├── llm_content.py                # Gemini/OpenAI commentary, with safe fallback everywhere
 │   ├── reply_templates.py            # private admin-only "reply guy" snippet generator
 │   ├── triggers.py                   # superseded — folded into signal_scanner.py, kept for reference
@@ -32,10 +38,55 @@ liquidity_bot/
 │   └── polls.py                      # poll question bank (Sunday engagement)
 └── .github/workflows/
     ├── daily_post.yml                 # runs daily_post.py on its weekday schedule
+    ├── daily_news.yml                 # runs daily_news.py once a day, own schedule (NEW)
     └── refresh_threads_token.yml      # runs refresh_threads_token.py weekly
 ```
 
+## Daily News Pick (separate from the 7-day rotation)
+
+`daily_news.py` runs **once a day, every day, at a fixed time (13:35 UTC —
+just after the US market open)**, completely independent of `daily_post.py`'s
+weekday schedule. It scans RSS feeds from the Fed, Treasury, and major
+financial media (see `lib/news_sources.py`) for the single story most likely
+to move US dollar liquidity conditions, and posts a short paraphrased summary
++ a plain "expected impact" line.
+
+**Design specifics (per explicit spec):**
+- **No links at all** — neither to the original article nor to the dashboard
+  site. Attribution is by **source name only** (e.g. "Source: Federal
+  Reserve"), shown on the card and in the caption footer.
+- **Silence is correct** — if nothing genuinely relevant is found, or
+  everything found was already covered recently, it posts nothing. It never
+  forces a filler post just to hit a daily quota.
+- **45-day dedup** — `lib/news_state.py` remembers which stories were already
+  posted (by article link) so the same story never repeats, even across
+  separate GitHub Actions runs (state is committed back into the repo, same
+  trick as the image-hosting module).
+- **Requires an LLM key** (Gemini or OpenAI) — this feature has no
+  template-only fallback for the pick/summary itself (picking "the most
+  relevant story" isn't something a fixed template can do). Without a key
+  configured, it will correctly find nothing to post every day rather than
+  guessing.
+- **Kept separate from the urgent data-signal scanner on purpose** — tying a
+  qualitative news story to a specific quantitative data spike reliably would
+  require the LLM to correctly infer cause-and-effect across two very
+  different data types, which is a much harder and more error-prone problem.
+  Two independent, simpler scanners is the more robust design.
+
+## Urgent Signal Scanner — now with 14-day dedup
+
+Previously the urgent scanner (`lib/signal_scanner.py`) could re-post the
+exact same signal every single day, because the underlying weekly-cadence
+series (TGA, WALCL, RRP, etc.) only actually change once a week — so the same
+"TGA falling for 29 straight weeks" fact would still be true, and get posted
+again, the next day. Fixed via `lib/signal_state.py`: after a signal is
+posted, its `(ticker, signal_type)` pair is remembered for **14 days**, and
+if the single top-ranked signal is still the same story, the scanner posts
+**nothing** that day rather than repeating it or falling back to a weaker
+second-best signal.
+
 ## Content rotation
+
 
 Liquidity numbers post **once a week only** (Monday) — no repeat daily
 snapshots that make back-to-back posts feel like the same content twice.

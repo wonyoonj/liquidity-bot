@@ -13,6 +13,7 @@ ship; the LLM only adds flavor on top.
 from __future__ import annotations
 
 import os
+import json
 import random
 import requests
 
@@ -206,6 +207,78 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
         parts += ["", f"<i>Why it matters:</i> {why_it_matters}"]
     parts += ["", f"👉 {site_url}"]
     return "\n".join(parts)
+
+
+def pick_and_write_news(candidates: list[dict]) -> dict | None:
+    """Given a shortlist of candidate news entries (title + short snippet
+    only — never the full article), asks the LLM to (1) pick the single one
+    most relevant to USD market liquidity / Fed policy / rates, and (2) write
+    a short paraphrased summary + a plain expected-impact line, all in ONE
+    call. Returns None if the LLM is unavailable or its output can't be
+    parsed — callers should treat that as "nothing to post today" rather
+    than crash, since fabricating a pick without grounding would be worse.
+
+    COPYRIGHT NOTE: candidates only carry short RSS snippets (already capped
+    at 500 chars upstream), and the prompt explicitly instructs the model to
+    paraphrase rather than reproduce source wording — consistent with this
+    project's copyright-safe-by-design approach throughout."""
+    if not candidates:
+        return None
+
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    listing = "\n".join(
+        f"[{i}] ({c['source_name']}) {c['title']} — {c['summary'][:200]}"
+        for i, c in enumerate(candidates)
+    )
+    prompt = (
+        "You are curating ONE daily news item for a social media account that tracks "
+        "US dollar market liquidity (Fed balance sheet, Treasury General Account, "
+        "reverse repo, bank reserves, short-term rates). Below is a numbered list of "
+        "today's candidate headlines with short snippets (not full articles).\n\n"
+        f"{listing}\n\n"
+        "Step 1: Pick the single index whose story is MOST likely to move US dollar "
+        "liquidity conditions or Fed policy expectations. If none are genuinely "
+        "relevant, pick -1.\n"
+        "Step 2: For your pick, write:\n"
+        "  - \"headline\": a short, plain, non-clickbait headline in your OWN words "
+        "(under 100 characters). Do not copy phrasing from the snippet.\n"
+        "  - \"summary\": 1-2 sentences (under 260 characters) paraphrasing what "
+        "happened, entirely in your own words — do not quote the snippet directly.\n"
+        "  - \"impact\": 1 short sentence (under 200 characters), plain and direct, "
+        "on the expected effect on US dollar liquidity or market conditions. If "
+        "genuinely uncertain, say so plainly rather than guessing confidently.\n\n"
+        "Respond with ONLY a JSON object, no markdown fences, no other text:\n"
+        '{"selected_index": <int>, "headline": "...", "summary": "...", "impact": "..."}'
+    )
+    try:
+        caller = _call_openai if provider == "openai" else _call_gemini
+        raw = caller(prompt, timeout=25).strip()
+        raw = raw.strip("`").removeprefix("json").strip() if raw.startswith("```") else raw
+        # handle the common ```json ... ``` wrapper defensively
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        data = json.loads(raw)
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_content] pick_and_write_news failed/unparseable: {e}")
+        return None
+
+    idx = data.get("selected_index", -1)
+    if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+        return None
+    if not all(data.get(k) for k in ("headline", "summary", "impact")):
+        return None
+
+    chosen = candidates[idx]
+    return {
+        "id": chosen["id"],
+        "title": chosen["title"],
+        "source_name": chosen["source_name"],
+        "headline": data["headline"].strip(),
+        "summary": data["summary"].strip(),
+        "impact": data["impact"].strip(),
+    }
 
 
 def generate_open_question(indicator_label: str, context_note: str = "") -> str:

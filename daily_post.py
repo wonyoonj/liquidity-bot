@@ -97,6 +97,7 @@ from lib.polls import pick_open_question_for_sunday, GENERIC_LIQUIDITY_POLLS
 from lib.llm_content import generate_fact_caption, generate_why_it_matters, generate_calendar_commentary
 from lib.reply_templates import generate_reply_snippets, format_reply_toolkit_message
 from lib.signal_scanner import get_top_signal
+from lib.signal_state import is_on_cooldown, record_signal_posted, COOLDOWN_DAYS
 from lib.knowledge_content import build_knowledge_content
 from lib.fetch_calendar import (
     get_events_this_month, get_top_upcoming_events, CalendarError,
@@ -388,6 +389,17 @@ def run_signal_scan(data_store: dict) -> int:
 
     print(f"  -> [{signal['category']}] {signal['signal_type']} on {signal['ticker']}: {signal['fact_text']}")
 
+    # DEDUP: the underlying weekly-cadence series only actually change once a
+    # week, so without this check the exact same signal would fire and get
+    # posted on every run in between — this is the repeat-content fix. Only
+    # the single top signal is checked (not a fallback list) — if it's on
+    # cooldown, we skip posting entirely today rather than reaching for a
+    # weaker second-best signal.
+    if is_on_cooldown(signal["ticker"], signal["signal_type"]):
+        print(f"[Signal Scan] '{signal['ticker']}:{signal['signal_type']}' was already posted within the "
+              f"last {COOLDOWN_DAYS} days — skipping to avoid repeat content.")
+        return 0
+
     chart_path = create_metric_chart_card(
         title=signal["label"],
         ticker=signal["ticker"],
@@ -409,6 +421,7 @@ def run_signal_scan(data_store: dict) -> int:
 
     send_photo(chart_path, caption)
     _mirror_to_threads(_strip_html(caption), image_path=chart_path)
+    record_signal_posted(signal["ticker"], signal["signal_type"])
     print("[Signal Scan] Posted.")
     return 0
 

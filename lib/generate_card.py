@@ -438,3 +438,65 @@ def create_term_icon_card(
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.save(out_path)
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# Daily news pick — no chart (qualitative story, not a data series), no date
+# stamp, no link baked into the image (per design: news posts carry a source-
+# name attribution only, never a URL, in either the image or the caption).
+# ---------------------------------------------------------------------------
+def create_news_card(
+    headline: str,
+    summary: str,
+    impact: str,
+    source_name: str,
+    site_name: str = "US Liquidity Dashboard",
+    out_path: str = "output/news_card.png",
+) -> str:
+    pad = 70
+    f_brand = _font(28, "Bold")
+    f_ticker = _font(24, "SemiBold")
+    f_headline = _font(40, "ExtraBold")
+    f_body = _font(28, "Regular")
+    f_label = _font(22, "Bold")
+    f_impact = _font(27, "Medium")
+    f_footer = _font(19, "Regular")
+
+    # Build on an oversized canvas, then crop to the real content height —
+    # headline/summary/impact lengths vary a lot day to day.
+    H = 1400
+    img, d = _new_card(H)
+
+    _header(d, pad, f_brand, f_ticker, "NEWS", site_name)
+    _pill(d, pad, 148, source_name.upper(), f_label, AMBER_TX, AMBER_BG)
+
+    headline_lines = _wrap_text(d, headline, f_headline, CANVAS_W - 2 * pad)
+    y = 220
+    for line in headline_lines[:4]:
+        d.text((pad, y), line, font=f_headline, fill=TEXT_DARK)
+        y += 52
+    y += 20
+
+    summary_lines = _wrap_text(d, summary, f_body, CANVAS_W - 2 * pad)
+    for line in summary_lines[:6]:
+        d.text((pad, y), line, font=f_body, fill=TEXT_BODY)
+        y += 42
+    y += 30
+
+    d.rectangle([pad, y, CANVAS_W - pad, y + 2], fill=LINE_COLOR)  # thin divider
+    y += 40
+
+    d.text((pad, y), "EXPECTED IMPACT", font=f_label, fill=BLUE)
+    y += 40
+    impact_lines = _wrap_text(d, impact, f_impact, CANVAS_W - 2 * pad)
+    for line in impact_lines[:6]:
+        d.text((pad, y), line, font=f_impact, fill=TEXT_DARK)
+        y += 40
+    y += 40
+
+    _footer(d, pad, y, f_footer, f"Source: {source_name}")
+    y += 50
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    img.crop((0, 0, CANVAS_W, min(H, y + 40))).save(out_path)
+    return out_path
