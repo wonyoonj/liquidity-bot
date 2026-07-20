@@ -1,0 +1,56 @@
+name: Daily Liquidity News Pick
+
+on:
+  schedule:
+    # Runs once a day, EVERY day, completely independent of daily_post.yml's
+    # 7-day content rotation (see daily_news.py docstring). 13:35 UTC is
+    # ~9:35am ET during EDT / ~8:35am ET during EST — just after the US
+    # market open, when US-morning + Europe-afternoon overlap gives the
+    # widest simultaneous audience for English-speaking financial content.
+    # A non-round minute is used deliberately (avoids the traffic spike GitHub
+    # Actions sees at the top of every hour, which can delay exact-hour crons).
+    - cron: '35 13 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # needed so the bot can commit the news card image + the dedup state file
+
+jobs:
+  news:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily news script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          ADMIN_CHAT_ID: ${{ secrets.ADMIN_CHAT_ID }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          THREADS_ACCESS_TOKEN: ${{ secrets.THREADS_ACCESS_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          GH_BRANCH: ${{ github.ref_name }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}       # "gemini" or "openai" — REQUIRED for this feature
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python daily_news.py
+
+      - name: Upload generated card (debugging, 7-day retention)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: news-card
+          path: output/news_card.png
+          retention-days: 7
+          if-no-files-found: ignore
