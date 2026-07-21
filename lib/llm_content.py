@@ -9,6 +9,21 @@ Design choice: if the LLM call fails for ANY reason (no key, rate limit,
 network hiccup), we fall back to a deterministic template so the daily post
 NEVER fails just because of the commentary layer. The core numbers always
 ship; the LLM only adds flavor on top.
+
+v2 fix: every fallback path now PRINTS the real exception before falling
+back. Previously all `except Exception:` blocks swallowed the error
+silently, which made a real, ongoing LLM failure look identical to "working
+normally, just using the fallback occasionally" in the Action logs — there
+was no way to tell them apart. If you see "[llm_content] ... failed:" lines
+in your logs now, that tells you definitively that every post is running on
+fallback templates, and shows you the actual reason (bad key, wrong model
+name, rate limit, timeout, etc.).
+
+v2 fix 2: generate_why_it_matters()'s fallback sentence no longer starts
+with "This matters because..." — every caller already prepends its own
+"Why it matters:" / "Why it matters right now:" label, so the old fallback
+text produced a visible double-up ("Why it matters: This matters
+because..."). Fixed to be a plain sentence with no redundant lead-in.
 """
 from __future__ import annotations
 
@@ -63,9 +78,15 @@ def _call_gemini(prompt: str, timeout: int = 20) -> str:
         },
         timeout=timeout,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # Surface the API's own error body — this is usually the single most
+        # useful line for diagnosing "why is this always falling back".
+        raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    try:
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Gemini response shape unexpected: {data}") from e
 
 
 def _call_openai(prompt: str, timeout: int = 20) -> str:
@@ -84,9 +105,22 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
         },
         timeout=timeout,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(f"OpenAI API {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
-    return data["choices"][0]["message"]["content"].strip()
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"OpenAI response shape unexpected: {data}") from e
+
+
+def _call_llm(prompt: str, timeout: int = 20) -> str:
+    """Shared dispatch + logging wrapper. Every public generate_* function
+    below should call this instead of _call_openai/_call_gemini directly, so
+    failures are ALWAYS logged in exactly one place, consistently."""
+    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    caller = _call_openai if provider == "openai" else _call_gemini
+    return caller(prompt, timeout=timeout)
 
 
 def _fallback_sentence(metrics: dict, angle: str) -> str:
@@ -110,8 +144,12 @@ def generate_why_it_matters(topic_label: str, context: str) -> str:
     the rest of this bot: matter-of-fact, no hype, no exclamation marks, no
     emoji, no hashtags. Falls back to a generic-but-still-useful template
     sentence if the LLM call fails, per this module's fail-open design —
-    the post never goes out without SOME explanation."""
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    the post never goes out without SOME explanation.
+
+    NOTE: the fallback text deliberately does NOT start with "Why it
+    matters" / "This matters because" — every caller already prepends its
+    own "Why it matters:" label onto whatever this returns, so doing it here
+    too would double up (this was a real bug — see module docstring)."""
     prompt = (
         "In 1-2 short sentences (under 220 characters total), explain to a retail "
         "investor audience WHY the following financial data point matters right now. "
@@ -123,12 +161,12 @@ def generate_why_it_matters(topic_label: str, context: str) -> str:
         "Output only the explanation, nothing else."
     )
     try:
-        caller = _call_openai if provider == "openai" else _call_gemini
-        return caller(prompt).strip()
-    except Exception:
+        return _call_llm(prompt).strip()
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_content] generate_why_it_matters failed, using fallback: {e}")
         return (
-            f"This matters because {topic_label} is a direct input into current US "
-            f"dollar liquidity conditions, which tend to move alongside broader asset prices."
+            f"{topic_label} is a direct input into current US dollar liquidity "
+            f"conditions, which tend to move alongside broader asset prices."
         )
 
 
@@ -137,7 +175,6 @@ def generate_calendar_commentary(top_event: dict, other_events: list[dict]) -> s
     most important upcoming release this month is worth watching, with a
     brief nod to the other top releases. Falls back to a template sentence
     if the LLM call fails."""
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     others = ", ".join(e["name"] for e in other_events if e is not top_event) or "no other major releases"
     prompt = (
         "In 2-3 short sentences (under 320 characters total), explain to a retail investor "
@@ -150,9 +187,9 @@ def generate_calendar_commentary(top_event: dict, other_events: list[dict]) -> s
         "Output only the explanation, nothing else."
     )
     try:
-        caller = _call_openai if provider == "openai" else _call_gemini
-        return caller(prompt).strip()
-    except Exception:
+        return _call_llm(prompt).strip()
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_content] generate_calendar_commentary failed, using fallback: {e}")
         return (
             f"{top_event['name']} is the release most likely to move Fed policy expectations "
             f"and short-term liquidity conditions this month, so it's worth watching closely."
@@ -161,15 +198,11 @@ def generate_calendar_commentary(top_event: dict, other_events: list[dict]) -> s
 
 def generate_angle_commentary(metrics: dict, angle: str | None = None) -> str:
     angle = angle or random.choice(ANGLES)
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     prompt = _build_prompt(metrics, angle)
-
     try:
-        if provider == "openai":
-            return _call_openai(prompt)
-        return _call_gemini(prompt)
-    except Exception:
-        # Never let commentary generation break the whole post.
+        return _call_llm(prompt).strip()
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_content] generate_angle_commentary failed, using fallback: {e}")
         return _fallback_sentence(metrics, angle)
 
 
@@ -182,7 +215,6 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
     claims or explanation. Falls back to the raw fact_text unmodified if the
     LLM is unavailable, which is already a perfectly usable caption on its own.
     No hashtags by design (see reach-strategy notes in daily_post.py)."""
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     prompt = (
         "Rewrite the following financial fact as ONE punchy headline-style sentence "
         "for a social media post, in the terse style of accounts like Barchart "
@@ -197,9 +229,9 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
         "Output only the rewritten sentence, nothing else."
     )
     try:
-        caller = _call_openai if provider == "openai" else _call_gemini
-        headline = caller(prompt)
-    except Exception:
+        headline = _call_llm(prompt).strip()
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_content] generate_fact_caption failed, using raw fact_text: {e}")
         headline = fact_text  # the deterministic fact is already a valid caption on its own
 
     parts = [headline]
@@ -225,7 +257,6 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
     if not candidates:
         return None
 
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     listing = "\n".join(
         f"[{i}] ({c['source_name']}) {c['title']} — {c['summary'][:200]}"
         for i, c in enumerate(candidates)
@@ -251,10 +282,7 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
         '{"selected_index": <int>, "headline": "...", "summary": "...", "impact": "..."}'
     )
     try:
-        caller = _call_openai if provider == "openai" else _call_gemini
-        raw = caller(prompt, timeout=25).strip()
-        raw = raw.strip("`").removeprefix("json").strip() if raw.startswith("```") else raw
-        # handle the common ```json ... ``` wrapper defensively
+        raw = _call_llm(prompt, timeout=25).strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -284,7 +312,6 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
 def generate_open_question(indicator_label: str, context_note: str = "") -> str:
     """Idea #10: an open opinion question about a specific liquidity indicator,
     for Sunday content / Threads engagement posts."""
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
     prompt = (
         "Write ONE short, genuinely open-ended question (under 200 characters, plain text, "
         f"no hashtags) inviting an English-speaking finance audience to share their opinion "
@@ -292,8 +319,7 @@ def generate_open_question(indicator_label: str, context_note: str = "") -> str:
         "Do not answer the question yourself. Output only the question."
     )
     try:
-        if provider == "openai":
-            return _call_openai(prompt)
-        return _call_gemini(prompt)
-    except Exception:
+        return _call_llm(prompt).strip()
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm_content] generate_open_question failed, using fallback: {e}")
         return f"What's your take on the recent move in {indicator_label}? Signal, or noise?"
