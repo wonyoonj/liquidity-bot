@@ -85,12 +85,26 @@ def _weekly_points(series: Series, n: int) -> List[Tuple[datetime, float]]:
 
 
 def _streak(diffs: List[float]) -> Dict:
+    """v2 fix: a week with EXACTLY ZERO change (common for policy-set rates
+    like IORB/Discount Rate, which only move on FOMC decisions and sit flat
+    otherwise) used to count as "rising" because of a `>= 0` comparison —
+    producing nonsense like "IORB rising for 51 straight weeks" when the
+    rate had simply not moved at all. A flat week now breaks the streak
+    instead of extending it; only genuine consecutive same-direction moves
+    count."""
     if not diffs:
         return {"length": 0, "direction": 0}
-    direction = 1 if diffs[-1] >= 0 else -1
+
+    last_nonzero = next((d for d in reversed(diffs) if d != 0), None)
+    if last_nonzero is None:
+        return {"length": 0, "direction": 0}  # every recent week was flat — no streak to report
+
+    direction = 1 if last_nonzero > 0 else -1
     length = 0
     for d in reversed(diffs):
-        d_dir = 1 if d >= 0 else -1
+        if d == 0:
+            break  # unchanged is its own state, not "still rising/falling"
+        d_dir = 1 if d > 0 else -1
         if d_dir == direction:
             length += 1
         else:
@@ -113,6 +127,16 @@ def _scan_one_series(data_store: dict, target: dict) -> Optional[Dict]:
     current_val = values[-1]
     current_diff = diffs[-1]
     current_date = dates[-1]
+
+    # v2 fix: policy-set rates (IORB, Discount Rate, etc.) sit at an exactly
+    # flat level between FOMC meetings. Over a window where nothing actually
+    # happened, every candidate below is technically "true" but practically
+    # meaningless (e.g. "just hit its highest level in 52 weeks" when it's
+    # been the ONLY level all 52 weeks). Skip entirely rather than manufacture
+    # a signal out of a flat line — silence is more honest than a fake story.
+    value_range = max(values) - min(values)
+    if value_range < max(abs(current_val) * 0.001, 1e-9):
+        return None
 
     candidates: List[Dict] = []
 

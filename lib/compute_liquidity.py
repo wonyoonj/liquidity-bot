@@ -123,15 +123,26 @@ def compute_trend_text(data_store: dict, current_result: dict) -> str:
 INDEX_WINDOWS = [("1W", 1), ("4W", 4), ("12W", 12), ("52W", 52)]  # matches the site exactly
 
 
-def compute_liquidity_index(data_store: dict, lookback_weeks: int = 260) -> Dict:
+def compute_liquidity_index(data_store: dict, lookback_weeks: int | None = None) -> Dict:
     """Re-implements the site's actual 'LIQUIDITY INDEX' gauge (index.html ->
     renderLiquidityIndexGauge()): the current net_market_flow value's
     PERCENTILE RANK against its own historical distribution, 0-100.
     0 = most drained week on record (site label: UNDERSUPPLY),
     100 = most flooded week on record (site label: FLOODED).
     This is NOT a linear mapping of dollar value — it's rank-based, exactly
-    matching what a viewer sees on the live dashboard gauge."""
-    history = compute_net_market_flow_history(data_store, weeks=lookback_weeks)
+    matching what a viewer sees on the live dashboard gauge.
+
+    v2 fix: lookback_weeks used to default to 260 (5 years), which silently
+    contradicted the site's own documented formula ("Percentile Rank ...
+    vs Full History") and produced a materially different index value than
+    the live site (e.g. 35 here vs 22 on the site for the same week) —
+    ranking against only the last 5 years excludes older extremes (like the
+    2020-2021 QE era), which shifts every percentile. Default is now None,
+    meaning "use every available data point", matching the site exactly."""
+    total_available = len(data_store.get("WTREGEN", []))
+    weeks_to_use = lookback_weeks if lookback_weeks is not None else max(total_available, 1)
+
+    history = compute_net_market_flow_history(data_store, weeks=weeks_to_use)
     if len(history) < 10:
         raise ValueError("Not enough history to compute a percentile-based Liquidity Index.")
 

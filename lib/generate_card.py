@@ -317,8 +317,29 @@ def create_metric_chart_card(
         img.paste(Image.alpha_composite(img.convert("RGBA"), area).convert("RGB"))
         d = ImageDraw.Draw(img)
 
-        d.line(pts, fill=BLUE, width=5, joint="curve")
-        lx, ly = pts[-1]
+        # v2 addition: week-to-week values (especially diff-based metrics
+        # like net liquidity flow) can be genuinely noisy — a raw connected
+        # line often just looks like meaningless jagged static. A short
+        # rolling-average trend line drawn on top makes the actual direction
+        # readable at a glance, while the raw line (now lighter/thinner)
+        # stays visible underneath for anyone who wants the exact weekly
+        # detail. Skipped for short/near-flat series where it wouldn't add
+        # anything (smoothing 8 points is pointless).
+        d.line(pts, fill=(163, 191, 250), width=2, joint="curve")
+
+        smooth_window = 4
+        if n >= smooth_window * 3:
+            smoothed = []
+            for i in range(n):
+                lo = max(0, i - smooth_window + 1)
+                smoothed.append(sum(chart_values[lo:i + 1]) / (i - lo + 1))
+            spts = [(cl + i * step, cb - ((v - vmin) / vrange) * (cb - ct)) for i, v in enumerate(smoothed)]
+            d.line(spts, fill=BLUE, width=6, joint="curve")
+            lx, ly = spts[-1]
+        else:
+            d.line(pts, fill=BLUE, width=5, joint="curve")
+            lx, ly = pts[-1]
+
         d.ellipse([lx - 8, ly - 8, lx + 8, ly + 8], fill=BLUE, outline="white", width=3)
 
         d.text((cl, cb + 14), chart_dates[0][5:] if chart_dates else "", font=f_axis, fill=TEXT_FAINT)
@@ -327,6 +348,8 @@ def create_metric_chart_card(
         d.text((cr - lw, cb + 14), lbl, font=f_axis, fill=TEXT_FAINT)
 
     weeks_label = f"Last {len(chart_values)} weeks" if chart_values else "Not enough data"
+    if len(chart_values) >= 12:
+        weeks_label += "  ·  bold line = 4-week trend"
     d.text((pad, cb + 48), weeks_label, font=f_axis, fill=TEXT_FAINT)
 
     _footer(d, pad, H - 78, f_footer)
