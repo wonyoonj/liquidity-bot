@@ -364,45 +364,105 @@ def create_metric_chart_card(
 # ---------------------------------------------------------------------------
 def create_calendar_card(
     events: List[Dict],
-    month_label: str,
+    year: int,
+    month: int,
     site_name: str = "US Liquidity Dashboard",
     out_path: str = "output/calendar_card.png",
 ) -> str:
-    """`events` items: {"name": str, "date": date, "is_past": bool}."""
-    row_h = 84
-    H = 420 + max(1, len(events)) * row_h
-    H = min(H, 1500)
+    """`events` items: {"name": str, "date": date, "is_past": bool}.
+
+    v2: replaced the old long vertical list (unreadable once more than a
+    couple events were on the calendar, and gave zero sense of WHEN in the
+    month they land) with a real calendar-grid layout: a Mon-Fri grid of the
+    current month on the left with event days checked off, and the same
+    dates listed with their release name on the right — matching the
+    reference layout the user asked for."""
+    import calendar as cal_module
+
+    pad = 60
+    H = 1040
     img, d = _new_card(H)
-    pad = 70
 
     f_brand = _font(28, "Bold")
     f_ticker = _font(24, "SemiBold")
-    f_title = _font(34, "SemiBold")
-    f_date = _font(26, "Bold")
-    f_name = _font(24, "Regular")
+    f_title = _font(42, "ExtraBold")
+    f_daylabel = _font(19, "Bold")
+    f_daynum = _font(23, "SemiBold")
+    f_date = _font(22, "Bold")
+    f_name = _font(20, "Regular")
     f_footer = _font(19, "Regular")
     f_empty = _font(24, "Regular")
 
     _header(d, pad, f_brand, f_ticker, "CALENDAR", site_name)
-    d.text((pad, 150), f"{month_label} — Major US Economic Releases", font=f_title, fill=TEXT_DARK)
 
-    y = 230
+    month_label = f"{cal_module.month_name[month]} {year}"
+    d.text((pad, 148), month_label, font=f_title, fill=TEXT_DARK)
+    d.text((pad, 208), "Major US Economic Releases", font=f_name, fill=TEXT_GRAY)
+
+    event_days = {e["date"].day for e in events}
+
+    # --- Left: Mon-Fri grid for the current month -------------------------
+    grid_left = pad
+    grid_top = 270
+    col_w = 78
+    row_h = 78
+    day_labels = ["MON", "TUE", "WED", "THU", "FRI"]
+
+    for i, lbl in enumerate(day_labels):
+        cx = grid_left + i * col_w + col_w / 2
+        lw = d.textlength(lbl, font=f_daylabel)
+        d.text((cx - lw / 2, grid_top), lbl, font=f_daylabel, fill=TEXT_GRAY)
+    d.rectangle([grid_left, grid_top + 30, grid_left + col_w * 5, grid_top + 32], fill=TEXT_DARK)
+
+    cal_module.setfirstweekday(cal_module.MONDAY)
+    weeks = cal_module.monthcalendar(year, month)
+    row_y = grid_top + 55
+    for week in weeks:
+        for i in range(5):  # Mon-Fri only — US econ releases never land on weekends
+            day_num = week[i]
+            cx = grid_left + i * col_w + col_w / 2
+            cy = row_y + row_h / 2 - 15
+            if day_num == 0:
+                d.text((cx - 6, cy), "-", font=f_daynum, fill=TEXT_FAINT)
+                continue
+            if day_num in event_days:
+                d.ellipse([cx - 26, cy - 6, cx + 26, cy + 46], fill=BLUE)
+                num_text = str(day_num)
+                nw = d.textlength(num_text, font=f_daynum)
+                d.text((cx - nw / 2, cy), num_text, font=f_daynum, fill="white")
+            else:
+                num_text = str(day_num)
+                nw = d.textlength(num_text, font=f_daynum)
+                d.text((cx - nw / 2, cy), num_text, font=f_daynum, fill=TEXT_BODY)
+        row_y += row_h
+
+    grid_bottom = row_y + 10
+
+    # --- Right: date + release name list -----------------------------------
+    list_left = grid_left + col_w * 5 + 50
+    list_right = CANVAS_W - pad
+    ly = grid_top
+
     if not events:
-        d.text((pad, y), "No major releases on the calendar this month.", font=f_empty, fill=TEXT_GRAY)
-        y += 60
+        d.text((list_left, ly), "No major releases", font=f_empty, fill=TEXT_GRAY)
+        d.text((list_left, ly + 34), "on the calendar this month.", font=f_empty, fill=TEXT_GRAY)
     else:
-        for e in events[:12]:
-            past = e["is_past"]
-            row_bg = (247, 248, 250) if past else (255, 255, 255)
-            row_border = CARD_BORDER if past else BLUE
-            d.rounded_rectangle([pad, y, CANVAS_W - pad, y + row_h - 18], radius=14,
-                                 fill=row_bg, outline=row_border, width=2)
-            mark = "✅" if past else "🔜"
-            d.text((pad + 20, y + 18), mark, font=f_date, fill=TEXT_DARK)
-            date_text = e["date"].strftime("%b %d") + f" ({['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][e['date'].weekday()]})"
-            d.text((pad + 70, y + 12), date_text, font=f_date, fill=BLUE if not past else TEXT_GRAY)
-            d.text((pad + 70, y + 44), e["name"], font=f_name, fill=TEXT_BODY)
-            y += row_h
+        weekday_abbr = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        for e in events[:9]:  # keep the list readable; grid still shows every date
+            date_text = e["date"].strftime("%b %d") + f" ({weekday_abbr[e['date'].weekday()]})"
+            d.text((list_left, ly), date_text, font=f_date, fill=BLUE)
+            ly += 30
+            for line in _wrap_text(d, e["name"], f_name, list_right - list_left):
+                d.text((list_left, ly), line, font=f_name, fill=TEXT_BODY)
+                ly += 27
+            ly += 18
+
+    content_bottom = max(grid_bottom, ly)
+    _footer(d, pad, content_bottom + 30, f_footer, "Source: FRED Official Release Calendar API")
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    img.crop((0, 0, CANVAS_W, min(H, content_bottom + 90))).save(out_path)
+    return out_path
 
     _footer(d, pad, H - 60, f_footer, "Source: FRED official Release Calendar API")
 

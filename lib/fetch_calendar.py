@@ -164,7 +164,31 @@ def get_events_this_month() -> List[Dict]:
                 events.append({"name": name, "date": release_date, "is_past": release_date < today})
 
     events.sort(key=lambda x: x["date"])
-    return events
+
+    # v2 defensive fix: none of these 5 releases legitimately appear more
+    # than 2-3 times in a single month (FOMC meets at most twice; the rest
+    # are monthly/quarterly). If FRED's API ever returns more than that for
+    # one release name in one call (seen in production: 11 straight days all
+    # labeled "FOMC Press Release" — almost certainly a release_id/date-
+    # filter mismatch upstream), keep only the earliest few rather than
+    # posting an obviously-broken calendar. This can't silently produce a
+    # WRONG single date, only silently drop implausible extras — the safer
+    # failure mode.
+    MAX_PLAUSIBLE_PER_MONTH = 3
+    counts: Dict[str, int] = {}
+    sane_events: List[Dict] = []
+    dropped_names: set = set()
+    for e in events:
+        counts[e["name"]] = counts.get(e["name"], 0) + 1
+        if counts[e["name"]] <= MAX_PLAUSIBLE_PER_MONTH:
+            sane_events.append(e)
+        else:
+            dropped_names.add(e["name"])
+    if dropped_names:
+        print(f"[fetch_calendar] WARN: dropped implausible extra dates for {dropped_names} "
+              f"(more than {MAX_PLAUSIBLE_PER_MONTH}/month) — likely an upstream API filter issue.")
+
+    return sane_events
 
 
 def format_monthly_calendar_caption(events: List[Dict], site_url: str, why_it_matters: str = "") -> str:

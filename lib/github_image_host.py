@@ -46,10 +46,20 @@ def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
     return result
 
 
-def _wait_until_reachable(url: str, max_attempts: int = 10, base_delay: float = 3.0) -> None:
+def _wait_until_reachable(url: str, max_attempts: int = 6, base_delay: float = 3.0) -> None:
     """Polls the URL with exponential backoff. Raises only after genuinely
-    exhausting the window — worst case ~2 minutes, comfortably covering
-    normal raw.githubusercontent.com CDN propagation delay."""
+    exhausting the window (~50s total) — a real CDN propagation delay always
+    resolves within seconds, so there's no point waiting minutes for it.
+
+    v3 note: if this still 404s after several attempts AND the git push
+    above clearly succeeded, it is almost never a propagation delay — it is
+    almost always because the repo is PRIVATE. raw.githubusercontent.com
+    returns 404 (not 403) for private-repo content specifically so it can't
+    be used to probe whether a private repo exists, and there's no way for
+    an external service like Threads to authenticate to fetch it. Waiting
+    longer will never fix this — the fix is making the repo public (GitHub
+    Secrets stay encrypted and protected regardless of repo visibility, so
+    this doesn't expose your tokens/keys)."""
     delay = base_delay
     last_status = None
     for attempt in range(1, max_attempts + 1):
@@ -64,10 +74,19 @@ def _wait_until_reachable(url: str, max_attempts: int = 10, base_delay: float = 
 
         if attempt < max_attempts:
             time.sleep(delay)
-            delay = min(delay * 1.6, 30.0)  # cap individual waits at 30s
+            delay = min(delay * 1.6, 15.0)
 
+    hint = (
+        " <- if the git push above succeeded and this is STILL 404 after "
+        "multiple attempts, your repo is almost certainly PRIVATE. "
+        "raw.githubusercontent.com cannot serve private-repo files to an "
+        "external service like Threads. Fix: Settings -> General -> Danger "
+        "Zone -> Change visibility -> Public (your Secrets remain fully "
+        "protected either way)."
+        if last_status == 404 else ""
+    )
     raise ImageHostError(
-        f"Image URL never became reachable after {max_attempts} attempts (last: {last_status}): {url}"
+        f"Image URL never became reachable after {max_attempts} attempts (last: {last_status}): {url}{hint}"
     )
 
 
