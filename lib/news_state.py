@@ -7,6 +7,14 @@ no memory of each other by default.
 Uses the same "commit a small file back into the repo" trick as
 lib/github_image_host.py, just for a JSON state file instead of an image.
 Keeps a rolling 45-day window so the state file never grows unbounded.
+
+v2: record_posted() now goes through lib/git_sync.commit_and_push_with_retry
+instead of a single push attempt. If another workflow (daily_post.py,
+refresh_threads_token.py) committed to the repo in between, the old code
+just logged a WARN and silently dropped the update — meaning dedup state
+could get lost on every race, not just "once in a while". Now, on a
+rejected push, the latest remote file is re-read and our append is
+re-applied on top of it before retrying, so the update is not lost.
 """
 from __future__ import annotations
 
@@ -15,6 +23,8 @@ import json
 import subprocess
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Set
+
+from lib.git_sync import commit_and_push_with_retry, GitSyncError
 
 STATE_PATH = "state/posted_news.json"
 RETENTION_DAYS = 45
@@ -59,8 +69,13 @@ def record_posted(entry_id: str, title: str) -> None:
     """Appends the given entry to the state file, prunes anything older than
     RETENTION_DAYS, and commits+pushes the result. Non-fatal on failure —
     worst case, a story might repeat once, which is far better than the
-    whole daily post crashing over a git hiccup."""
-    try:
+    whole daily post crashing over a git hiccup.
+
+    The actual read-modify-write is wrapped in `prepare` and handed to
+    commit_and_push_with_retry, which re-runs it against the freshly-pulled
+    file if the push is rejected by a concurrent workflow — so a race no
+    longer means the update just gets dropped."""
+    def prepare() -> None:
         records: List[Dict] = []
         if os.path.exists(STATE_PATH):
             with open(STATE_PATH, "r", encoding="utf-8") as f:
@@ -81,17 +96,15 @@ def record_posted(entry_id: str, title: str) -> None:
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
 
-        _run(["git", "config", "user.name", "liquidity-bot"])
-        _run(["git", "config", "user.email", "liquidity-bot@users.noreply.github.com"])
-        _run(["git", "add", STATE_PATH])
-
-        diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if diff_check.returncode == 0:
-            return  # nothing changed, nothing to commit
-
-        branch = os.environ.get("GH_BRANCH", "main")
-        _run(["git", "commit", "-m", f"chore: record posted news [skip ci]"])
-        _run(["git", "push", "origin", f"HEAD:{branch}"])
+    try:
+        commit_and_push_with_retry(
+            prepare_fn=prepare,
+            add_paths=[STATE_PATH],
+            commit_message="chore: record posted news [skip ci]",
+            branch=os.environ.get("GH_BRANCH", "main"),
+        )
+    except GitSyncError as e:
+        print(f"[news_state] WARN: could not persist state ({e}) — dedup may be imperfect next run.")
     except Exception as e:  # noqa: BLE001
         print(f"[news_state] WARN: could not persist state ({e}) — dedup may be imperfect next run.")
 

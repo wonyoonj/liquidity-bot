@@ -11,6 +11,11 @@ recently posted and suppress reposting the same one for 14 days.
 Same git-commit-based persistence trick as lib/news_state.py and
 lib/github_image_host.py — a small JSON file committed back into the repo,
 so state survives across separate GitHub Actions runs.
+
+v2: record_signal_posted() now goes through
+lib/git_sync.commit_and_push_with_retry instead of a single push attempt,
+so a concurrent-write rejection from another workflow re-reads the latest
+file and re-applies the update instead of silently dropping it.
 """
 from __future__ import annotations
 
@@ -19,6 +24,8 @@ import json
 import subprocess
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional
+
+from lib.git_sync import commit_and_push_with_retry, GitSyncError
 
 STATE_PATH = "state/posted_signals.json"
 COOLDOWN_DAYS = 14
@@ -69,8 +76,12 @@ def is_on_cooldown(ticker: str, signal_type: str) -> bool:
 def record_signal_posted(ticker: str, signal_type: str) -> None:
     """Marks (ticker, signal_type) as posted now, prunes anything older than
     COOLDOWN_DAYS, and commits+pushes. Non-fatal on failure — at worst a
-    signal might repeat once, which is far better than crashing the run."""
-    try:
+    signal might repeat once, which is far better than crashing the run.
+
+    Wraps the read-modify-write in `prepare` and hands it to
+    commit_and_push_with_retry, which re-runs it against the
+    freshly-pulled file if another workflow's push landed first."""
+    def prepare() -> None:
         records: Dict[str, str] = {}
         if os.path.exists(STATE_PATH):
             with open(STATE_PATH, "r", encoding="utf-8") as f:
@@ -87,17 +98,15 @@ def record_signal_posted(ticker: str, signal_type: str) -> None:
         with open(STATE_PATH, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
 
-        _run(["git", "config", "user.name", "liquidity-bot"])
-        _run(["git", "config", "user.email", "liquidity-bot@users.noreply.github.com"])
-        _run(["git", "add", STATE_PATH])
-
-        diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"])
-        if diff_check.returncode == 0:
-            return
-
-        branch = os.environ.get("GH_BRANCH", "main")
-        _run(["git", "commit", "-m", "chore: record posted signal [skip ci]"])
-        _run(["git", "push", "origin", f"HEAD:{branch}"])
+    try:
+        commit_and_push_with_retry(
+            prepare_fn=prepare,
+            add_paths=[STATE_PATH],
+            commit_message="chore: record posted signal [skip ci]",
+            branch=os.environ.get("GH_BRANCH", "main"),
+        )
+    except GitSyncError as e:
+        print(f"[signal_state] WARN: could not persist state ({e}) — dedup may be imperfect next run.")
     except Exception as e:  # noqa: BLE001
         print(f"[signal_state] WARN: could not persist state ({e}) — dedup may be imperfect next run.")
 

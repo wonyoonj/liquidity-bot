@@ -18,6 +18,16 @@ slow" from the Action logs alone. Both are fixed here:
     2. The reachability poll now waits much longer with exponential backoff
        before giving up (worst case ~2 minutes total), which comfortably
        covers normal CDN propagation delay.
+
+v3 (this version): fixes the *next* failure mode, seen after v2 —
+`git push` itself getting rejected with "! [rejected] HEAD -> main (fetch
+first)". That happens when another workflow run (daily_news.py,
+refresh_threads_token.py, or a second image in the same daily_post.py run)
+commits to the repo in between. Pushing is now retried via
+lib/git_sync.push_with_retry, which fetches + rebases onto the new remote
+tip and tries again instead of failing immediately. Also gives each image
+filename microsecond precision so two images published within the same
+run/second never collide on `dest_rel_path`.
 """
 from __future__ import annotations
 
@@ -29,21 +39,11 @@ from datetime import datetime, timezone
 
 import requests
 
+from lib.git_sync import run as _run, configure_identity, push_with_retry, GitSyncError
+
 
 class ImageHostError(RuntimeError):
     pass
-
-
-def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(f"    $ {' '.join(cmd)}")
-    if result.stdout.strip():
-        print(f"      stdout: {result.stdout.strip()}")
-    if result.stderr.strip():
-        print(f"      stderr: {result.stderr.strip()}")
-    if check and result.returncode != 0:
-        raise ImageHostError(f"Command failed ({result.returncode}): {' '.join(cmd)}\n{result.stderr}")
-    return result
 
 
 def _wait_until_reachable(url: str, max_attempts: int = 6, base_delay: float = 3.0) -> None:
@@ -101,7 +101,10 @@ def publish_image_to_repo(local_path: str, folder: str = "images") -> str:
         raise ImageHostError("GH_REPO / GITHUB_REPOSITORY is not set — can't build a public URL.")
     branch = os.environ.get("GH_BRANCH", "main")
 
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    # Microsecond precision (not just seconds) so two images published in the
+    # same run — e.g. daily_post.py's calendar card + signal card — never
+    # collide on dest_rel_path and get mistaken for "nothing to commit".
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
     ext = os.path.splitext(local_path)[1] or ".png"
     dest_rel_path = f"{folder}/{ts}{ext}"
 
@@ -109,8 +112,7 @@ def publish_image_to_repo(local_path: str, folder: str = "images") -> str:
     os.makedirs(folder, exist_ok=True)
     shutil.copyfile(local_path, dest_rel_path)
 
-    _run(["git", "config", "user.name", "liquidity-bot"])
-    _run(["git", "config", "user.email", "liquidity-bot@users.noreply.github.com"])
+    configure_identity()
     _run(["git", "add", dest_rel_path])
 
     diff_check = subprocess.run(["git", "diff", "--cached", "--quiet"])
@@ -120,13 +122,11 @@ def publish_image_to_repo(local_path: str, folder: str = "images") -> str:
     print("[github_image_host] Committing...")
     _run(["git", "commit", "-m", f"chore: add {dest_rel_path} [skip ci]"])
 
-    print("[github_image_host] Pushing...")
-    push_result = _run(["git", "push", "origin", f"HEAD:{branch}"], check=False)
-    if push_result.returncode != 0:
-        raise ImageHostError(
-            f"git push FAILED (exit {push_result.returncode}) — this is a real push failure, "
-            f"not a CDN delay. Check branch protection rules / token permissions.\n{push_result.stderr}"
-        )
+    print("[github_image_host] Pushing (with retry on concurrent-write conflicts)...")
+    try:
+        push_with_retry(branch)
+    except GitSyncError as e:
+        raise ImageHostError(str(e)) from e
 
     local_head = _run(["git", "rev-parse", "HEAD"]).stdout.strip()
     print(f"[github_image_host] Pushed commit {local_head[:10]} to {branch}. Verifying public URL...")
