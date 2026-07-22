@@ -264,8 +264,9 @@ def run_tuesday_calendar() -> int:
         why = generate_calendar_commentary(top3[0], top3)
 
     print("[3/4] Generating the calendar card image...")
-    month_label = datetime.now(timezone.utc).strftime("%B %Y")
-    cal_path = create_calendar_card(events, month_label)
+    now = datetime.now(timezone.utc)
+    month_label = now.strftime("%B %Y")
+    cal_path = create_calendar_card(events, now.year, now.month)
 
     print("[4/4] Posting...")
     lines = [f"<b>{month_label} — What to Watch</b>\n"]
