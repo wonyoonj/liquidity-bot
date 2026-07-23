@@ -95,6 +95,7 @@ from lib.github_image_host import publish_image_to_repo, ImageHostError
 from lib.terms import get_term_of_the_day, format_term_caption
 from lib.polls import pick_open_question_for_sunday, GENERIC_LIQUIDITY_POLLS
 from lib.llm_content import generate_fact_caption, generate_why_it_matters, generate_calendar_commentary
+from lib.indicator_thresholds import format_status_line
 from lib.reply_templates import generate_reply_snippets, format_reply_toolkit_message
 from lib.signal_scanner import get_top_signal
 from lib.signal_state import is_on_cooldown, record_signal_posted, COOLDOWN_DAYS
@@ -317,14 +318,24 @@ def run_knowledge_content(data_store: dict | None = None) -> int:
     why = generate_why_it_matters(
         content["title"],
         f"Current value: {content['current_value']}{content['unit']}. {content['explainer']}",
+        assessment=content.get("assessment"),
     )
-    caption = (
-        f"<b>{content['title']}</b>\n\n"
-        f"{content['explainer']}\n\n"
-        f"<i>Why it matters right now:</i> {why}\n\n"
+    status_line = format_status_line(content.get("assessment"))
+    caption_parts = [
+        f"<b>{content['title']}</b>",
+        "",
+        content["explainer"],
+        "",
+    ]
+    if status_line:
+        caption_parts += [f"<b>Status:</b> {status_line}", ""]
+    caption_parts += [
+        f"<i>Why it matters right now:</i> {why}",
+        "",
         f"💬 Does this match what you're seeing elsewhere — curious how others read it.\n\n"
         f"👉 Full charts & data: {SITE_URL}"
-    )
+    ]
+    caption = "\n".join(caption_parts)
     send_photo(chart_path, caption)
     _mirror_to_threads(_strip_html(caption), image_path=chart_path)
 
@@ -410,7 +421,10 @@ def run_signal_scan(data_store: dict) -> int:
         badge_text=signal["signal_type"].replace("_", " ").upper()[:20],
     )
 
-    why = generate_why_it_matters(signal["label"], signal["fact_text"])
+    why = generate_why_it_matters(
+        signal["label"], signal["fact_text"], assessment=signal.get("assessment"),
+    )
+    status_line = format_status_line(signal.get("assessment"))
     caption = generate_fact_caption(
         fact_text=signal["fact_text"],
         ticker=signal["ticker"],
@@ -418,6 +432,7 @@ def run_signal_scan(data_store: dict) -> int:
         unit=signal["unit"],
         site_url=SITE_URL,
         why_it_matters=why,
+        status_line=status_line or "",
     )
 
     send_photo(chart_path, caption)

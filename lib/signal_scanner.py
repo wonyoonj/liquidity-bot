@@ -24,6 +24,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
 
+from lib.indicator_thresholds import assess
+
 Series = List[Tuple[datetime, float]]
 
 # --- Raw series to scan individually -----------------------------------
@@ -176,6 +178,7 @@ def _scan_one_series(data_store: dict, target: dict) -> Optional[Dict]:
         return None
 
     best = max(candidates, key=lambda c: c["priority"])
+    chart_values = [round(v, 2) for v in values]
     return {
         "series_key": target["key"],
         "label": target["label"],
@@ -187,8 +190,9 @@ def _scan_one_series(data_store: dict, target: dict) -> Optional[Dict]:
         "fact_text": best["text"],
         "current_value": round(current_val, 2),
         "current_date": current_date.strftime("%Y-%m-%d"),
-        "chart_values": [round(v, 2) for v in values],
+        "chart_values": chart_values,
         "chart_dates": [d.strftime("%Y-%m-%d") for d in dates],
+        "assessment": assess(target["ticker"], chart_values, target["unit"]),
     }
 
 
@@ -295,6 +299,7 @@ def _scan_combined_metric(data_store: dict) -> Optional[Dict]:
         "current_date": current["as_of_date"],
         "chart_values": chart_values,
         "chart_dates": chart_dates,
+        "assessment": assess("USLIQ", chart_values, "B$/Wk"),
     }
 
 

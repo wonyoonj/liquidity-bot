@@ -24,6 +24,22 @@ with "This matters because..." — every caller already prepends its own
 "Why it matters:" / "Why it matters right now:" label, so the old fallback
 text produced a visible double-up ("Why it matters: This matters
 because..."). Fixed to be a plain sentence with no redundant lead-in.
+
+v3 fix: the OLD fallback sentence was a single fixed template
+("{topic} is a direct input into current US dollar liquidity conditions,
+which tend to move alongside broader asset prices.") reused for every
+single topic. Under sustained LLM-provider errors (e.g. an exhausted
+OpenAI quota — a real, observed failure mode, not hypothetical) EVERY post
+falls back, and readers correctly noticed the exact same sentence showing
+up post after post regardless of topic — it reads as an obviously
+automated dashboard alert, not a piece of written analysis. generate_why_
+it_matters() now accepts an optional `assessment` (see
+lib/indicator_thresholds.py) and, when the LLM call fails, builds the
+fallback from that instead: a real good/bad status by an explicit standard
+plus a trend-based risk note computed from actual data. Different topics
+now get genuinely different fallback text, and the same explicit standard
+that generated the fallback ALSO gets used to ground the LLM prompt when
+the call does succeed, so the two paths agree with each other.
 """
 from __future__ import annotations
 
@@ -31,6 +47,7 @@ import os
 import json
 import random
 import requests
+from typing import Optional
 
 ANGLES = ["comparison", "record", "cause", "question", "warning"]
 
@@ -137,33 +154,55 @@ def _fallback_sentence(metrics: dict, angle: str) -> str:
     return f"Net market liquidity flow this week: {net:+.1f} B$/Week."
 
 
-def generate_why_it_matters(topic_label: str, context: str) -> str:
+def generate_why_it_matters(topic_label: str, context: str, assessment: Optional[dict] = None) -> str:
     """Short (1-2 sentence), calm, informational explanation of WHY a given
     data point/signal is worth paying attention to right now — used on
     Monday/Wednesday/Thursday/Friday and the urgent scanner. Tone matches
     the rest of this bot: matter-of-fact, no hype, no exclamation marks, no
-    emoji, no hashtags. Falls back to a generic-but-still-useful template
+    emoji, no hashtags. Falls back to a deterministic, per-topic template
     sentence if the LLM call fails, per this module's fail-open design —
     the post never goes out without SOME explanation.
+
+    `assessment` (optional): the dict returned by
+    lib/indicator_thresholds.assess() for this topic's ticker — an explicit
+    good/bad status plus a trend-based risk note, computed straight from
+    the chart data. When given, it's used to (a) ground the LLM prompt so
+    the model's own answer doesn't contradict the data-driven status, and
+    (b) build a topic-specific fallback if the LLM call fails, instead of
+    the old one-size-fits-all sentence.
 
     NOTE: the fallback text deliberately does NOT start with "Why it
     matters" / "This matters because" — every caller already prepends its
     own "Why it matters:" label onto whatever this returns, so doing it here
     too would double up (this was a real bug — see module docstring)."""
+    assessment_line = ""
+    if assessment and assessment.get("status") not in (None, "unknown"):
+        assessment_line = (
+            f"\nExplicit standard for judging this value: {assessment.get('status_label', '')}. "
+            f"Current status: {assessment.get('status', '')}. "
+            f"Trend-based risk: {assessment.get('risk_note', '')}"
+        )
+
     prompt = (
         "In 1-2 short sentences (under 220 characters total), explain to a retail "
         "investor audience WHY the following financial data point matters right now. "
+        "If an explicit standard and trend-based risk are given below, your answer must be "
+        "consistent with them — state plainly whether this is currently good or bad by that "
+        "standard, and whether the trend raises or lowers the risk of it getting worse. "
         "Tone: calm, informational, matter-of-fact — like a financial news ticker, not "
         "hype or clickbait. No emoji, no exclamation marks, no hashtags, no markdown. "
         "Do not invent any numbers not given below.\n\n"
         f"Topic: {topic_label}\n"
-        f"Context: {context}\n\n"
+        f"Context: {context}"
+        f"{assessment_line}\n\n"
         "Output only the explanation, nothing else."
     )
     try:
         return _call_llm(prompt).strip()
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] generate_why_it_matters failed, using fallback: {e}")
+        if assessment and assessment.get("risk_note"):
+            return f"{assessment.get('status_label', '')}. {assessment['risk_note']}".strip()
         return (
             f"{topic_label} is a direct input into current US dollar liquidity "
             f"conditions, which tend to move alongside broader asset prices."
@@ -207,14 +246,19 @@ def generate_angle_commentary(metrics: dict, angle: str | None = None) -> str:
 
 
 def generate_fact_caption(fact_text: str, ticker: str, current_value: float, unit: str,
-                            site_url: str, why_it_matters: str = "") -> str:
+                            site_url: str, why_it_matters: str = "", status_line: str = "") -> str:
     """Barchart-style single-fact caption. The fact itself (fact_text) is
     already numerically grounded and deterministic (see signal_scanner.py) —
     the LLM's only job is to rephrase it into a punchier, more natural-sounding
     single sentence, in the terse 'headline + emoji' style, NOT to add new
     claims or explanation. Falls back to the raw fact_text unmodified if the
     LLM is unavailable, which is already a perfectly usable caption on its own.
-    No hashtags by design (see reach-strategy notes in daily_post.py)."""
+    No hashtags by design (see reach-strategy notes in daily_post.py).
+
+    `status_line` (optional): output of lib.indicator_thresholds.
+    format_status_line() — an explicit good/bad-by-what-standard line,
+    rendered above the "Why it matters" line so the reader sees a clear
+    judgment call, not just a data point."""
     prompt = (
         "Rewrite the following financial fact as ONE punchy headline-style sentence "
         "for a social media post, in the terse style of accounts like Barchart "
@@ -235,6 +279,8 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
         headline = fact_text  # the deterministic fact is already a valid caption on its own
 
     parts = [headline]
+    if status_line:
+        parts += ["", f"<b>Status:</b> {status_line}"]
     if why_it_matters:
         parts += ["", f"<i>Why it matters:</i> {why_it_matters}"]
     parts += ["", f"👉 {site_url}"]

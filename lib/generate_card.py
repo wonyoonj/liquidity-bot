@@ -317,6 +317,33 @@ def create_metric_chart_card(
         img.paste(Image.alpha_composite(img.convert("RGBA"), area).convert("RGB"))
         d = ImageDraw.Draw(img)
 
+        # v4 addition: the chart previously had NO y-axis scale at all — a
+        # reader could see the line move but not what range it moved across,
+        # so a 0.39% spread and a 3.5% spread would visually look identical.
+        # Print the min/max values actually spanned by the visible line,
+        # right-aligned inside the chart area so they don't collide with the
+        # line itself. For any series that actually crosses zero (spreads,
+        # net-flow) also draw a dashed zero-reference line — the level where
+        # e.g. a yield curve flips from normal to inverted is exactly the
+        # kind of context a bare line chart otherwise hides.
+        def _fmt_axis_val(v: float) -> str:
+            return f"{v:,.2f}{unit}" if unit == "%" else f"{v:,.0f}{unit}"
+
+        max_lbl = _fmt_axis_val(vmax)
+        min_lbl = _fmt_axis_val(vmin)
+        d.text((cl, ct - 4), max_lbl, font=f_axis, fill=TEXT_FAINT)
+        d.text((cl, cb - 24), min_lbl, font=f_axis, fill=TEXT_FAINT)
+
+        if vmin < 0 < vmax:
+            zero_y = cb - ((0 - vmin) / vrange) * (cb - ct)
+            dash_len, gap_len, x = 6, 5, cl
+            while x < cr:
+                x_end = min(x + dash_len, cr)
+                d.line([(x, zero_y), (x_end, zero_y)], fill=TEXT_FAINT, width=1)
+                x = x_end + gap_len
+            zero_lbl = "0" + (unit if unit == "%" else "")
+            d.text((cl, zero_y - 26), zero_lbl, font=f_axis, fill=TEXT_FAINT)
+
         # v2 addition: week-to-week values (especially diff-based metrics
         # like net liquidity flow) can be genuinely noisy — a raw connected
         # line often just looks like meaningless jagged static. A short

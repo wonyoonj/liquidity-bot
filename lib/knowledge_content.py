@@ -10,11 +10,20 @@ repeat until the whole list has been covered.
 If the data doesn't go back a full 52 weeks, the chart simply uses
 whatever history is available up to the most recent data point (see
 _last_52_weeks below) instead of failing.
+
+v2: build_knowledge_content() now also returns an `assessment` (see
+lib/indicator_thresholds.py) — an explicit good/bad status for the current
+value plus a trend-based risk note, computed from the same chart data.
+This is what lets the post state a clear standard ("good" vs "bad" by what
+measure) and a real, data-driven forward-looking risk note, instead of a
+number + dictionary definition with no point of view.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
+
+from lib.indicator_thresholds import assess
 
 Series = List[Tuple[datetime, float]]
 
@@ -234,6 +243,7 @@ def build_knowledge_content(data_store: dict, as_of: Optional[datetime] = None) 
 
     values = [round(v * topic["scale"], 3) for _, v in points]
     dates = [d.strftime("%Y-%m-%d") for d, _ in points]
+    assessment = assess(topic["ticker"], values, topic["unit"])
 
     return {
         "title": topic["title"],
@@ -245,4 +255,5 @@ def build_knowledge_content(data_store: dict, as_of: Optional[datetime] = None) 
         "chart_dates": dates,
         "current_value": values[-1],
         "weeks_shown": len(values),
+        "assessment": assessment,
     }
