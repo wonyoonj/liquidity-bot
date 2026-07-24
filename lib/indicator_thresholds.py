@@ -180,7 +180,14 @@ def format_status_line(assessment: Dict) -> Optional[str]:
     """One-line, ready-to-paste caption fragment: emoji + status + risk
     note. Returns None if there's nothing usable to say (unknown ticker or
     insufficient data) so callers can skip the line entirely rather than
-    print something empty."""
+    print something empty.
+
+    NOTE: prefer format_status_short() below when the caption ALSO shows a
+    separate why-it-matters line — using both this and a why-it-matters
+    line built from the same assessment says the risk note twice (this was
+    a real, reported bug: a real post showed the identical sentence under
+    both "Status:" and "Why it matters:"). format_status_line() is for
+    standalone use only, where there is no separate why-it-matters line."""
     if not assessment or assessment.get("status") in (None, "unknown"):
         return None
     emoji = STATUS_EMOJI.get(assessment["status"], "")
@@ -192,3 +199,19 @@ def format_status_line(assessment: Dict) -> Optional[str]:
     if risk:
         line += f"\n{risk}"
     return line
+
+
+def format_status_short(assessment: Dict) -> Optional[str]:
+    """Emoji + status label ONLY, no risk note — designed to pair with a
+    separate why-it-matters line (LLM-generated or the fallback below) that
+    carries the forward-looking risk narrative, so the two lines say
+    different things instead of repeating each other. This is the
+    preferred function for any caption that also has its own "Why it
+    matters" line."""
+    if not assessment or assessment.get("status") in (None, "unknown"):
+        return None
+    label = assessment.get("status_label") or ""
+    if not label:
+        return None
+    emoji = STATUS_EMOJI.get(assessment["status"], "")
+    return f"{emoji} {label}".strip()

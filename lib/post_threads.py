@@ -49,13 +49,29 @@ def _get_credentials():
     return user_id, access_token
 
 
+def _safe_text(text: str, limit: int = 500) -> str:
+    """Last-resort safety net only. Callers (see daily_post.py's
+    _mirror_to_threads, which uses lib/text_split.py) are expected to have
+    already split anything over Threads' 500-char limit into separate
+    chained-reply posts, so this should rarely actually cut anything. If it
+    ever does, it prints a visible warning rather than truncating silently
+    the way this used to (`text[:500]` with no logging) — that silent
+    truncation is what produced the mid-sentence cut-off ("...tend to move
+    al") the user flagged from an actual post."""
+    if len(text) <= limit:
+        return text
+    print(f"[Threads] WARNING: text was {len(text)} chars, over the {limit}-char limit, and had to be "
+          f"hard-truncated here — this should not normally happen if callers split long text upstream.")
+    return text[:limit]
+
+
 def publish_text_post(text: str, timeout: int = 30) -> dict:
     """Two-step publish: create a container, then publish it."""
     user_id, access_token = _get_credentials()
 
     create_resp = requests.post(
         f"{THREADS_API_BASE}/{user_id}/threads",
-        data={"media_type": "TEXT", "text": text[:500], "access_token": access_token},
+        data={"media_type": "TEXT", "text": _safe_text(text), "access_token": access_token},
         timeout=timeout,
     )
     try:
@@ -93,7 +109,7 @@ def publish_image_post(text: str, image_url: str, timeout: int = 30) -> dict:
         data={
             "media_type": "IMAGE",
             "image_url": image_url,
-            "text": text[:500],
+            "text": _safe_text(text),
             "access_token": access_token,
         },
         timeout=timeout,
@@ -138,7 +154,7 @@ def publish_poll_post(text: str, options: list[str], timeout: int = 30) -> dict:
         f"{THREADS_API_BASE}/{user_id}/threads",
         data={
             "media_type": "TEXT",
-            "text": text[:500],
+            "text": _safe_text(text),
             "poll_attachment": json.dumps(poll_attachment),
             "access_token": access_token,
         },
@@ -180,7 +196,7 @@ def reply_to_post(parent_id: str, text: str, image_url: str | None = None, timeo
 
     data = {
         "media_type": "IMAGE" if image_url else "TEXT",
-        "text": text[:500],
+        "text": _safe_text(text),
         "reply_to_id": parent_id,
         "access_token": access_token,
     }

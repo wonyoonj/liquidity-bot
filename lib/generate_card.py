@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import os
 from typing import List, Dict, Optional
-from PIL import Image, ImageDraw, ImageFont, ImageChops
+from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageOps
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FONT_PATH = os.path.join(BASE_DIR, "fonts", "Inter-Variable.ttf")
@@ -188,7 +188,7 @@ def create_gauge_card(
     nw = d.textlength(num_text, font=f_val)
     uw = d.textlength("/100", font=f_unit)
     total_w = nw + 10 + uw
-    d.text((cx - total_w / 2, ny2), num_text, font=f_val, fill=BLUE)
+    d.text((cx - total_w / 2, ny2), num_text, font=f_val, fill=TEXT_DARK)
     d.text((cx - total_w / 2 + nw + 10, ny2 + 50), "/100", font=f_unit, fill=TEXT_FAINT)
 
     explain_lines = [
@@ -292,7 +292,7 @@ def create_metric_chart_card(
     if chart_values:
         current = chart_values[-1]
         val_text = f"{current:,.2f}" if unit == "%" else f"{current:,.1f}"
-        d.text((pad, vy), val_text, font=f_val, fill=BLUE)
+        d.text((pad, vy), val_text, font=f_val, fill=TEXT_DARK)
         vw = d.textlength(val_text, font=f_val)
         unit_label = unit if unit == "%" else f" {unit}"
         d.text((pad + vw + 12, vy + 35), unit_label, font=f_unit, fill=TEXT_GRAY)
@@ -555,25 +555,48 @@ def create_term_icon_card(
 # stamp, no link baked into the image (per design: news posts carry a source-
 # name attribution only, never a URL, in either the image or the caption).
 # ---------------------------------------------------------------------------
+def _round_corners(im: Image.Image, radius: int) -> Image.Image:
+    im = im.convert("RGBA")
+    mask = Image.new("L", im.size, 0)
+    ImageDraw.Draw(mask).rounded_rectangle([0, 0, im.size[0], im.size[1]], radius=radius, fill=255)
+    im.putalpha(mask)
+    return im
+
+
 def create_news_card(
     headline: str,
-    summary: str,
-    impact: str,
     source_name: str,
+    photo_path: Optional[str] = None,
     site_name: str = "US Liquidity Dashboard",
     out_path: str = "output/news_card.png",
 ) -> str:
+    """Headline-only news card (v3).
+
+    Per explicit feedback, the old version packed the full summary AND an
+    "EXPECTED IMPACT" paragraph onto the image itself — visually busy, and
+    duplicated what the caption text below the post already says. This
+    version shows just the headline plus, when available, a real photo:
+    the source article's own lead image (see lib/news_image.py, which
+    pulls it from the RSS entry's media fields or the article's og:image
+    meta tag). Full summary + expected-impact detail still goes in the
+    caption text itself (see daily_news.py); it's just no longer baked
+    into the image.
+
+    v3 fix: when no photo is found, this used to fall back to a plain
+    light-blue placeholder panel with a watermark — per feedback that this
+    "looked bad" as a big empty box, there is now no image block at all in
+    that case. The card is simply a compact headline card (title + source),
+    which reads as intentional rather than like a broken/missing image.
+
+    `photo_path`: local path to an already-downloaded image, or None (or a
+    path that doesn't exist / fails to open — handled the same way)."""
     pad = 70
     f_brand = _font(28, "Bold")
     f_ticker = _font(24, "SemiBold")
-    f_headline = _font(40, "ExtraBold")
-    f_body = _font(28, "Regular")
+    f_headline = _font(44, "ExtraBold")
     f_label = _font(22, "Bold")
-    f_impact = _font(27, "Medium")
     f_footer = _font(19, "Regular")
 
-    # Build on an oversized canvas, then crop to the real content height —
-    # headline/summary/impact lengths vary a lot day to day.
     H = 1400
     img, d = _new_card(H)
 
@@ -584,25 +607,28 @@ def create_news_card(
     y = 220
     for line in headline_lines[:4]:
         d.text((pad, y), line, font=f_headline, fill=TEXT_DARK)
-        y += 52
-    y += 20
-
-    summary_lines = _wrap_text(d, summary, f_body, CANVAS_W - 2 * pad)
-    for line in summary_lines[:6]:
-        d.text((pad, y), line, font=f_body, fill=TEXT_BODY)
-        y += 42
+        y += 56
     y += 30
 
-    d.rectangle([pad, y, CANVAS_W - pad, y + 2], fill=LINE_COLOR)  # thin divider
-    y += 40
+    photo_h = 560
+    box_w = CANVAS_W - 2 * pad
+    placed = False
+    if photo_path and os.path.exists(photo_path):
+        try:
+            photo = Image.open(photo_path).convert("RGB")
+            fitted = ImageOps.fit(photo, (box_w, photo_h), method=Image.LANCZOS)
+            fitted = _round_corners(fitted, radius=24)
+            img.paste(fitted, (pad, y), fitted)
+            placed = True
+            y += photo_h + 40
+        except Exception as e:  # noqa: BLE001 — corrupt/unsupported download, fall back cleanly
+            print(f"[generate_card] Could not place news photo ({e}), using headline-only layout.")
 
-    d.text((pad, y), "EXPECTED IMPACT", font=f_label, fill=BLUE)
-    y += 40
-    impact_lines = _wrap_text(d, impact, f_impact, CANVAS_W - 2 * pad)
-    for line in impact_lines[:6]:
-        d.text((pad, y), line, font=f_impact, fill=TEXT_DARK)
-        y += 40
-    y += 40
+    if not placed:
+        # No photo block at all — thin divider straight to the source line,
+        # so the card reads as a deliberately compact headline card.
+        d.rectangle([pad, y, CANVAS_W - pad, y + 2], fill=LINE_COLOR)
+        y += 30
 
     _footer(d, pad, y, f_footer, f"Source: {source_name}")
     y += 50

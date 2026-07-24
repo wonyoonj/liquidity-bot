@@ -15,6 +15,7 @@ from typing import List, Dict, Optional
 import feedparser
 
 from lib.news_sources import NEWS_SOURCES, RELEVANCE_KEYWORDS
+from lib.news_image import extract_feed_image_url
 
 
 def _entry_id(entry: dict) -> str:
@@ -99,6 +100,7 @@ def fetch_candidate_entries(hours_back: int = 30, max_per_feed: int = 12) -> Lis
                 "title": title,
                 "summary": summary[:500],  # cap length; only used as LLM context, never reproduced verbatim
                 "link": entry.get("link", ""),
+                "image_url": extract_feed_image_url(entry),  # may be None; og:image fallback happens later
                 "source_name": source["name"],
                 "source_weight": source["weight"],
                 "published": published.isoformat() if published else None,

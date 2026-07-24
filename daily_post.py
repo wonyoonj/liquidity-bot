@@ -95,11 +95,12 @@ from lib.github_image_host import publish_image_to_repo, ImageHostError
 from lib.terms import get_term_of_the_day, format_term_caption
 from lib.polls import pick_open_question_for_sunday, GENERIC_LIQUIDITY_POLLS
 from lib.llm_content import generate_fact_caption, generate_why_it_matters, generate_calendar_commentary
-from lib.indicator_thresholds import format_status_line
+from lib.indicator_thresholds import format_status_line, format_status_short
 from lib.reply_templates import generate_reply_snippets, format_reply_toolkit_message
 from lib.signal_scanner import get_top_signal
 from lib.signal_state import is_on_cooldown, record_signal_posted, COOLDOWN_DAYS
 from lib.knowledge_content import build_knowledge_content
+from lib.text_split import split_text_by_length, THREADS_CHAR_LIMIT
 from lib.fetch_calendar import (
     get_events_this_month, get_top_upcoming_events, CalendarError,
 )
@@ -127,12 +128,24 @@ def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str |
     """Publishes the main Threads post (link-free body) and posts the link as
     a reply. Returns the published post id (or None if Threads isn't
     configured / the post failed) so callers can attach further replies
-    (e.g. Monday's second trend-chart image)."""
+    (e.g. Monday's second trend-chart image).
+
+    v2: if the body doesn't fit in Threads' 500-char single-post limit, it
+    is now split at clean sentence/word boundaries (see lib/text_split.py)
+    and the overflow is posted as chained replies, instead of being
+    silently cut off mid-sentence by the old `text[:500]` slice."""
     if not os.environ.get("THREADS_USER_ID") or not os.environ.get("THREADS_ACCESS_TOKEN"):
         print("[Threads] Not configured, skipping mirror post.")
         return None
 
     body, link_text = _split_link_line(text, site_url) if site_url and site_url in text else (text, None)
+
+    chunks = split_text_by_length(body, THREADS_CHAR_LIMIT) or [""]
+    first_chunk, overflow_chunks = chunks[0], chunks[1:]
+    if overflow_chunks:
+        print(f"[Threads] Body is {len(body)} chars — splitting into {len(chunks)} posts "
+              f"(main + {len(overflow_chunks)} continuation repl{'y' if len(overflow_chunks) == 1 else 'ies'}) "
+              f"instead of truncating.")
 
     post_id = None
     if image_path:
@@ -140,7 +153,7 @@ def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str |
             print("[Threads] Publishing generated image to repo for a public URL...")
             image_url = publish_image_to_repo(image_path)
             print(f"  -> {image_url}")
-            resp = publish_image_post(body, image_url)
+            resp = publish_image_post(first_chunk, image_url)
             post_id = resp.get("id")
             print("[Threads] Mirrored with image successfully.")
         except (ImageHostError, ThreadsError) as e:
@@ -148,17 +161,27 @@ def _mirror_to_threads(text: str, image_path: str | None = None, site_url: str |
 
     if post_id is None:
         try:
-            resp = publish_text_post(body)
+            resp = publish_text_post(first_chunk)
             post_id = resp.get("id")
             print("[Threads] Mirrored (text-only) successfully.")
         except ThreadsError as e:
             print(f"[Threads] Mirror failed (non-fatal): {e}", file=sys.stderr)
             return None
 
-    if post_id and link_text:
+    last_id = post_id
+    for i, chunk in enumerate(overflow_chunks, start=2):
         try:
-            reply_to_post(post_id, link_text)
-            print("[Threads] Link posted as first reply.")
+            resp = reply_to_post(last_id, chunk)
+            last_id = resp.get("id") or last_id
+            print(f"[Threads] Continuation {i}/{len(chunks)} posted as a reply.")
+        except ThreadsError as e:
+            print(f"[Threads] Continuation reply failed (non-fatal, earlier parts still up): {e}", file=sys.stderr)
+            break
+
+    if link_text:
+        try:
+            reply_to_post(last_id, link_text)
+            print("[Threads] Link posted as final reply.")
         except ThreadsError as e:
             print(f"[Threads] Reply-with-link failed (non-fatal, main post still up): {e}", file=sys.stderr)
 
@@ -183,6 +206,25 @@ def _strip_html(text: str) -> str:
     for tag in ("<b>", "</b>", "<i>", "</i>"):
         text = text.replace(tag, "")
     return text
+
+
+def _first_sentence(text: str, max_chars: int = 180) -> str:
+    """Trims a longer explainer paragraph down to just its first sentence
+    (falling back to a hard character cut at a word boundary if even the
+    first sentence is unusually long) — used to keep captions short per
+    user feedback that full multi-sentence explainers made posts too long
+    to read in one screen and pushed them into Threads' overflow/"1/2"
+    pagination."""
+    text = text.strip()
+    for sep in (". ", "! ", "? "):
+        idx = text.find(sep)
+        if 0 < idx < max_chars:
+            return text[:idx + 1]
+    if len(text) <= max_chars:
+        return text
+    cut = text.rfind(" ", 0, max_chars)
+    cut = cut if cut > 0 else max_chars
+    return text[:cut].rstrip(",;: ") + "…"
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +256,7 @@ def run_monday_liquidity_result(data_store: dict | None = None) -> int:
         f"Index: <b>{index_data['percentile']}/100</b> — {index_data['status']['text_en']}\n\n"
         f"Driven mainly by {driver_sentence}.\n\n"
         f"<i>Why it matters:</i> {why}\n\n"
-        f"👉 For full details, check the page: {SITE_URL}"
+        f"👉 {SITE_URL}"
     )
 
     print("[4/5] Posting the gauge...")
@@ -320,20 +362,19 @@ def run_knowledge_content(data_store: dict | None = None) -> int:
         f"Current value: {content['current_value']}{content['unit']}. {content['explainer']}",
         assessment=content.get("assessment"),
     )
-    status_line = format_status_line(content.get("assessment"))
+    status_short = format_status_short(content.get("assessment"))
     caption_parts = [
         f"<b>{content['title']}</b>",
         "",
-        content["explainer"],
+        _first_sentence(content["explainer"]),
         "",
     ]
-    if status_line:
-        caption_parts += [f"<b>Status:</b> {status_line}", ""]
+    if status_short:
+        caption_parts += [f"<b>Status:</b> {status_short}"]
     caption_parts += [
-        f"<i>Why it matters right now:</i> {why}",
+        f"<i>Why it matters:</i> {why}",
         "",
-        f"💬 Does this match what you're seeing elsewhere — curious how others read it.\n\n"
-        f"👉 Full charts & data: {SITE_URL}"
+        f"👉 {SITE_URL}",
     ]
     caption = "\n".join(caption_parts)
     send_photo(chart_path, caption)
@@ -424,7 +465,7 @@ def run_signal_scan(data_store: dict) -> int:
     why = generate_why_it_matters(
         signal["label"], signal["fact_text"], assessment=signal.get("assessment"),
     )
-    status_line = format_status_line(signal.get("assessment"))
+    status_short = format_status_short(signal.get("assessment"))
     caption = generate_fact_caption(
         fact_text=signal["fact_text"],
         ticker=signal["ticker"],
@@ -432,7 +473,7 @@ def run_signal_scan(data_store: dict) -> int:
         unit=signal["unit"],
         site_url=SITE_URL,
         why_it_matters=why,
-        status_line=status_line or "",
+        status_line=status_short or "",
     )
 
     send_photo(chart_path, caption)

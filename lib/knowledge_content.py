@@ -206,28 +206,48 @@ def _derive_series(data_store: dict, key_a: str, key_b: str) -> Optional[Series]
     return spread if len(spread) >= 4 else None
 
 
-def pick_topic_for_week(iso_week: int) -> Dict:
-    """Alternates the pool by ISO-week parity (odd -> liquidity, even ->
-    rates), and cycles independently through each pool so topics don't
-    repeat until the full list has been covered."""
+def pick_topic_for_week(as_of) -> Dict:
+    """Deterministically picks a knowledge-post topic for the given date.
+
+    v2 fix: this used to take only `iso_week` and compute the in-pool index
+    from it — but the knowledge post runs on BOTH Wednesday and Thursday of
+    the same ISO week, using this exact same function, so the two posts
+    always landed on the identical topic (this is exactly the bug behind
+    two back-to-back "What is the 10Y-2Y Yield Curve Spread?" posts one day
+    apart). The POOL (liquidity vs rates) still alternates by ISO-week
+    parity, so each week stays thematically consistent, but the index
+    *within* that pool is now keyed off the ordinal day number instead of
+    the week number — so Wednesday and Thursday (consecutive days) reliably
+    land on different topics, while the same date always reproduces the
+    same topic if this ever needs to be re-run.
+
+    Accepts either a date/datetime or a raw ISO week int for backward
+    compatibility with any external caller — an int just skips the
+    day-level disambiguation (pool selection only)."""
+    if isinstance(as_of, int):
+        iso_week, ordinal = as_of, as_of
+    else:
+        d = as_of.date() if hasattr(as_of, "date") else as_of
+        iso_week, ordinal = d.isocalendar()[1], d.toordinal()
+
     if iso_week % 2 == 1:
         pool, pool_name = LIQUIDITY_TOPICS, "liquidity"
     else:
         pool, pool_name = RATE_TOPICS, "rates"
 
-    idx = (iso_week // 2) % len(pool)
+    idx = ordinal % len(pool)
     topic = dict(pool[idx])
     topic["pool"] = pool_name
     return topic
 
 
 def build_knowledge_content(data_store: dict, as_of: Optional[datetime] = None) -> Optional[Dict]:
-    """Returns everything needed to render + caption the Wednesday knowledge
-    card, or None if the chosen topic's series has no usable data this week
-    (rare — falls back gracefully rather than posting a broken chart)."""
+    """Returns everything needed to render + caption the Wednesday/Thursday
+    knowledge card, or None if the chosen topic's series has no usable data
+    this week (rare — falls back gracefully rather than posting a broken
+    chart)."""
     as_of = as_of or datetime.utcnow()
-    iso_week = as_of.isocalendar()[1]
-    topic = pick_topic_for_week(iso_week)
+    topic = pick_topic_for_week(as_of)
 
     if "derive" in topic:
         series = _derive_series(data_store, *topic["derive"])

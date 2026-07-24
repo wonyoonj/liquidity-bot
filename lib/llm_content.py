@@ -178,31 +178,31 @@ def generate_why_it_matters(topic_label: str, context: str, assessment: Optional
     assessment_line = ""
     if assessment and assessment.get("status") not in (None, "unknown"):
         assessment_line = (
-            f"\nExplicit standard for judging this value: {assessment.get('status_label', '')}. "
-            f"Current status: {assessment.get('status', '')}. "
-            f"Trend-based risk: {assessment.get('risk_note', '')}"
+            f"\nExplicit standard already shown to the reader elsewhere in this post: "
+            f"{assessment.get('status_label', '')}. Do NOT restate this standard or say "
+            f"whether it's good/bad again — that's already covered. Trend-based risk data "
+            f"you should build your answer from: {assessment.get('risk_note', '')}"
         )
 
     prompt = (
-        "In 1-2 short sentences (under 220 characters total), explain to a retail "
-        "investor audience WHY the following financial data point matters right now. "
-        "If an explicit standard and trend-based risk are given below, your answer must be "
-        "consistent with them — state plainly whether this is currently good or bad by that "
-        "standard, and whether the trend raises or lowers the risk of it getting worse. "
+        "In ONE short sentence (under 140 characters total), tell a retail investor audience "
+        "the forward-looking risk or trend implication of the following data point. "
+        "If trend-based risk data is given below, base your answer on it, in your own words — "
+        "do not just copy it verbatim. "
         "Tone: calm, informational, matter-of-fact — like a financial news ticker, not "
         "hype or clickbait. No emoji, no exclamation marks, no hashtags, no markdown. "
         "Do not invent any numbers not given below.\n\n"
         f"Topic: {topic_label}\n"
         f"Context: {context}"
         f"{assessment_line}\n\n"
-        "Output only the explanation, nothing else."
+        "Output only the one sentence, nothing else."
     )
     try:
         return _call_llm(prompt).strip()
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] generate_why_it_matters failed, using fallback: {e}")
         if assessment and assessment.get("risk_note"):
-            return f"{assessment.get('status_label', '')}. {assessment['risk_note']}".strip()
+            return assessment["risk_note"]
         return (
             f"{topic_label} is a direct input into current US dollar liquidity "
             f"conditions, which tend to move alongside broader asset prices."
@@ -216,14 +216,14 @@ def generate_calendar_commentary(top_event: dict, other_events: list[dict]) -> s
     if the LLM call fails."""
     others = ", ".join(e["name"] for e in other_events if e is not top_event) or "no other major releases"
     prompt = (
-        "In 2-3 short sentences (under 320 characters total), explain to a retail investor "
-        "audience WHY the following upcoming US economic release is worth watching this month, "
-        "and briefly note what else is on the calendar. Tone: calm, informational, "
-        "matter-of-fact — no hype, no emoji, no hashtags, no exclamation marks, no markdown. "
-        "Do not invent any numbers, forecasts, or figures not given below.\n\n"
+        "In ONE short sentence (under 160 characters total), tell a retail investor "
+        "audience WHY the following upcoming US economic release is worth watching this month. "
+        "Tone: calm, informational, matter-of-fact — no hype, no emoji, no hashtags, no "
+        "exclamation marks, no markdown. Do not invent any numbers, forecasts, or figures "
+        "not given below.\n\n"
         f"Most important upcoming release: {top_event['name']} on {top_event['date']}\n"
         f"Also on the calendar this month: {others}\n\n"
-        "Output only the explanation, nothing else."
+        "Output only the one sentence, nothing else."
     )
     try:
         return _call_llm(prompt).strip()
@@ -255,10 +255,12 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
     LLM is unavailable, which is already a perfectly usable caption on its own.
     No hashtags by design (see reach-strategy notes in daily_post.py).
 
-    `status_line` (optional): output of lib.indicator_thresholds.
-    format_status_line() — an explicit good/bad-by-what-standard line,
+    `status_line` (optional): typically the output of lib.indicator_thresholds.
+    format_status_short() — an explicit good/bad-by-what-standard label,
     rendered above the "Why it matters" line so the reader sees a clear
-    judgment call, not just a data point."""
+    judgment call, not just a data point. Use the _short (label-only)
+    variant here, not format_status_line(), since the latter's risk note
+    would duplicate what why_it_matters already says."""
     prompt = (
         "Rewrite the following financial fact as ONE punchy headline-style sentence "
         "for a social media post, in the terse style of accounts like Barchart "
@@ -319,9 +321,9 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
         "Step 2: For your pick, write:\n"
         "  - \"headline\": a short, plain, non-clickbait headline in your OWN words "
         "(under 100 characters). Do not copy phrasing from the snippet.\n"
-        "  - \"summary\": 1-2 sentences (under 260 characters) paraphrasing what "
+        "  - \"summary\": ONE sentence (under 160 characters) paraphrasing what "
         "happened, entirely in your own words — do not quote the snippet directly.\n"
-        "  - \"impact\": 1 short sentence (under 200 characters), plain and direct, "
+        "  - \"impact\": ONE short sentence (under 140 characters), plain and direct, "
         "on the expected effect on US dollar liquidity or market conditions. If "
         "genuinely uncertain, say so plainly rather than guessing confidently.\n\n"
         "Respond with ONLY a JSON object, no markdown fences, no other text:\n"
@@ -352,6 +354,11 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
         "headline": data["headline"].strip(),
         "summary": data["summary"].strip(),
         "impact": data["impact"].strip(),
+        # Internal-only fields — used solely to fetch a real lead photo for
+        # the news card (see lib/news_image.py). Never surfaced in any
+        # caption or shown to the reader; this feature carries zero links.
+        "image_url": chosen.get("image_url"),
+        "_article_link": chosen.get("link"),
     }
 
 

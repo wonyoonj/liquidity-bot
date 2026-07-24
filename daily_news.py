@@ -35,25 +35,40 @@ import traceback
 
 from lib.news_scanner import get_daily_news_pick, mark_news_posted
 from lib.generate_card import create_news_card
+from lib.news_image import download_image, fetch_og_image
 from lib.post_telegram import send_photo, send_text, TelegramError
-from lib.post_threads import publish_text_post, publish_image_post, ThreadsError
+from lib.post_threads import publish_text_post, publish_image_post, reply_to_post, ThreadsError
 from lib.github_image_host import publish_image_to_repo, ImageHostError
+from lib.text_split import split_text_by_length, THREADS_CHAR_LIMIT
 
 
 def _mirror_to_threads_no_link(caption: str, image_path: str | None) -> None:
     """Minimal Threads mirror for this feature only — deliberately does NOT
     use daily_post.py's _mirror_to_threads (which posts the site link as a
-    reply), because news posts must carry zero links of any kind."""
+    reply), because news posts must carry zero links of any kind.
+
+    v2: splits overflow into chained replies (same fix as daily_post.py's
+    _mirror_to_threads) instead of relying on post_threads.py's safety-net
+    truncation."""
     if not os.environ.get("THREADS_USER_ID") or not os.environ.get("THREADS_ACCESS_TOKEN"):
         print("[Threads] Not configured, skipping mirror post.")
         return
+    chunks = split_text_by_length(caption, THREADS_CHAR_LIMIT) or [""]
+    first_chunk, overflow_chunks = chunks[0], chunks[1:]
     try:
         if image_path:
             image_url = publish_image_to_repo(image_path)
-            publish_image_post(caption, image_url)
+            resp = publish_image_post(first_chunk, image_url)
         else:
-            publish_text_post(caption)
+            resp = publish_text_post(first_chunk)
         print("[Threads] Mirrored successfully.")
+        last_id = resp.get("id")
+        for chunk in overflow_chunks:
+            if not last_id:
+                break
+            reply = reply_to_post(last_id, chunk)
+            last_id = reply.get("id") or last_id
+            print("[Threads] Continuation posted as a reply.")
     except (ImageHostError, ThreadsError) as e:
         print(f"[Threads] Mirror failed (non-fatal): {e}", file=sys.stderr)
 
@@ -66,15 +81,27 @@ def main() -> int:
             print("Nothing new/relevant to post today — skipping silently (this is expected behavior).")
             return 0
 
-        print("[2/3] Generating the news card...")
+        print("[2/3] Fetching the story's photo (RSS thumbnail, else og:image)...")
+        photo_path = None
+        if pick.get("image_url"):
+            photo_path = download_image(pick["image_url"], "output/news_photo.jpg")
+        if not photo_path:
+            og_url = fetch_og_image(pick.get("_article_link") or "")
+            if og_url:
+                photo_path = download_image(og_url, "output/news_photo.jpg")
+        if photo_path:
+            print(f"  -> using photo: {photo_path}")
+        else:
+            print("  -> no usable photo found, card will use the placeholder panel")
+
+        print("[3/3] Generating the news card (headline + photo only)...")
         card_path = create_news_card(
             headline=pick["headline"],
-            summary=pick["summary"],
-            impact=pick["impact"],
             source_name=pick["source_name"],
+            photo_path=photo_path,
         )
 
-        print("[3/3] Posting (no links — source-name attribution only)...")
+        print("Posting (no links — source-name attribution only)...")
         caption = (
             f"📰 <b>{pick['headline']}</b>\n\n"
             f"{pick['summary']}\n\n"
