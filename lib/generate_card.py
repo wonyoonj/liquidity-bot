@@ -665,14 +665,14 @@ def create_top4_card(
     f_bullet = _font(28, "Regular")
     f_footer = _font(25, "Bold")
 
-    date_text = f"[{date_label}] Top News"
-    dw = d.textlength(date_text, font=f_date)
-    d.text((W - pad - dw, 64), date_text, font=f_date, fill=TOP4_MUTED)
-
     title_w = d.textlength(title, font=f_title)
     d.text(((W - title_w) / 2, 60), title, font=f_title, fill=TOP4_TEXT)
 
-    y = 175
+    date_text = f"[{date_label}] Top News"
+    dw = d.textlength(date_text, font=f_date)
+    d.text(((W - dw) / 2, 128), date_text, font=f_date, fill=TOP4_MUTED)
+
+    y = 205
     circle_d = 62
     circle_x = pad
     text_left = circle_x + circle_d + 34
