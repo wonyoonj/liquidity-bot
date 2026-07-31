@@ -103,6 +103,22 @@ def _mirror_to_threads_no_link(caption: str, image_path: str | None) -> None:
 
 def main() -> int:
     try:
+        missing = [
+            name for name in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
+            if not os.environ.get(name)
+        ]
+        if missing:
+            print(f"[ERROR] Missing required secret(s): {', '.join(missing)} — "
+                  f"check Settings > Secrets and variables > Actions on the repo.", file=sys.stderr)
+            return 1
+        if not os.environ.get("LLM_PROVIDER") or not (
+            os.environ.get("GEMINI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        ):
+            print("[ERROR] LLM_PROVIDER + a matching API key (GEMINI_API_KEY or "
+                  "OPENAI_API_KEY) are required for this feature — check repo secrets.",
+                  file=sys.stderr)
+            return 1
+
         print("[1/4] Fetching today's Reuters Business & Finance headlines...")
         candidates = fetch_today_entries()
         print(f"  -> {len(candidates)} candidate entries fetched")
@@ -113,7 +129,8 @@ def main() -> int:
 
         if not fresh:
             print("No fresh candidates today — skipping silently "
-                  "(this is expected behavior, not an error).")
+                  "(this is expected behavior, not an error; see the "
+                  "[top4_fetcher] log lines above for why the candidate count is what it is).")
             return 0
 
         # Post with as many distinct stories as are actually available today,
