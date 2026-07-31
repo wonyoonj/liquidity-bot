@@ -636,3 +636,86 @@ def create_news_card(
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     img.crop((0, 0, CANVAS_W, min(H, y + 40))).save(out_path)
     return out_path
+
+
+TOP4_BG = (244, 240, 227)
+TOP4_TEXT = (27, 33, 28)
+TOP4_CIRCLE_LINE = (122, 132, 109)
+TOP4_MUTED = (110, 118, 102)
+
+
+def create_top4_card(
+    items: List[Dict],
+    date_label: str,
+    title: str = "FINANCIAL SUMMARY",
+    footer_line1: str = "FOLLOW OUR ACCOUNT TO RECEIVE",
+    footer_line2: str = "DAILY TOP NEWS UPDATES",
+    out_path: str = "output/top4_card.png",
+) -> str:
+    W = 1080
+    pad = 80
+    H_SCRATCH = 2400
+    img = Image.new("RGB", (W, H_SCRATCH), TOP4_BG)
+    d = ImageDraw.Draw(img)
+
+    f_title = _font(42, "ExtraBold")
+    f_date = _font(23, "SemiBold")
+    f_num = _font(26, "Regular")
+    f_headline = _font(46, "ExtraBold")
+    f_bullet = _font(28, "Regular")
+    f_footer = _font(25, "Bold")
+
+    date_text = f"[{date_label}] Top News"
+    dw = d.textlength(date_text, font=f_date)
+    d.text((W - pad - dw, 64), date_text, font=f_date, fill=TOP4_MUTED)
+
+    title_w = d.textlength(title, font=f_title)
+    d.text(((W - title_w) / 2, 60), title, font=f_title, fill=TOP4_TEXT)
+
+    y = 175
+    circle_d = 62
+    circle_x = pad
+    text_left = circle_x + circle_d + 34
+    text_max_w = W - pad - text_left
+    line_h = 56
+    bullet_line_h = 38
+
+    for i, item in enumerate(items[:4], start=1):
+        block_top = y
+        d.ellipse([circle_x, y, circle_x + circle_d, y + circle_d],
+                   outline=TOP4_CIRCLE_LINE, width=2)
+        num_text = str(i)
+        nw = d.textlength(num_text, font=f_num)
+        nb = d.textbbox((0, 0), num_text, font=f_num)
+        nh = nb[3] - nb[1]
+        d.text((circle_x + circle_d / 2 - nw / 2, y + circle_d / 2 - nh / 2 - nb[1]),
+               num_text, font=f_num, fill=TOP4_CIRCLE_LINE)
+
+        headline_text = f"{i}. {item['headline']}"
+        headline_lines = _wrap_text(d, headline_text, f_headline, text_max_w)
+        ty = y
+        for line in headline_lines:
+            d.text((text_left, ty), line, font=f_headline, fill=TOP4_TEXT)
+            ty += line_h
+
+        bullet = item.get("bullet")
+        if bullet:
+            bullet_lines = _wrap_text(d, "\u2022 " + bullet, f_bullet, text_max_w)
+            for line in bullet_lines:
+                d.text((text_left, ty), line, font=f_bullet, fill=TOP4_MUTED)
+                ty += bullet_line_h
+            ty += 8
+
+        y = max(block_top + circle_d, ty) + 44
+
+    y += 24
+    l1w = d.textlength(footer_line1, font=f_footer)
+    l2w = d.textlength(footer_line2, font=f_footer)
+    d.text(((W - l1w) / 2, y), footer_line1, font=f_footer, fill=TOP4_TEXT)
+    y += 42
+    d.text(((W - l2w) / 2, y), footer_line2, font=f_footer, fill=TOP4_TEXT)
+    y += 70
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    img.crop((0, 0, W, min(H_SCRATCH, y))).save(out_path)
+    return out_path

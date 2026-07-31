@@ -13,6 +13,15 @@ run) — so if one of these goes dead, the pipeline keeps working with whatever
 sources are still live. Worth spot-checking this list every few months.
 """
 
+# Single dedicated source for the "Daily Top 4 Headlines" feature
+# (see daily_top4.py / lib/top4_fetcher.py). Kept separate from NEWS_SOURCES
+# below (which is a multi-source, keyword-prefiltered list feeding
+# daily_news.py's single-story picker) because this feature has a
+# different shape: exactly one trusted wire source, no keyword prefilter
+# needed since the feed itself is already scoped to business/finance, and
+# "today" means the US/Eastern calendar date rather than a rolling window.
+REUTERS_TOP4_FEED_URL = "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best"
+
 NEWS_SOURCES = [
     # --- Official / primary sources (highest trust) ---
     {"name": "Federal Reserve", "url": "https://www.federalreserve.gov/feeds/press_all.xml", "weight": 3},
