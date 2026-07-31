@@ -21,6 +21,7 @@ crashing the whole run (same fail-open philosophy as news_fetcher.py).
 from __future__ import annotations
 
 import sys
+import re
 import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
@@ -78,16 +79,31 @@ _FEED_REQUEST_HEADERS = {
     "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7",
 }
 
+# Matches a bare "&" that is NOT already the start of a valid XML entity
+# reference (&amp; &lt; &gt; &quot; &apos; &#123; &#x1F;) — real-world feeds,
+# Reuters' included, routinely contain literal un-escaped ampersands in
+# headline text (e.g. "S&P 500", "AT&T", "R&D"), which is invalid XML and
+# makes feedparser's strict parser die with "not well-formed (invalid
+# token)" and return ZERO entries — with no other symptom (no HTTP error,
+# no bozo-free empty feed). Escaping any bare "&" to "&amp;" before parsing
+# is the standard fix real-world RSS consumers apply for this extremely
+# common feed-quality issue.
+_BARE_AMPERSAND_RE = re.compile(r"&(?!#\d+;|#x[0-9a-fA-F]+;|[a-zA-Z][a-zA-Z0-9]*;)")
+
 
 def _fetch_feed_entries(url: str, timeout: int = 20):
-    """Fetches the feed ourselves via requests (with browser-like headers)
-    and hands the raw bytes to feedparser.parse(), instead of calling
-    feedparser.parse(url) directly. This gives us the actual HTTP status
-    code / exception on failure to log, instead of feedparser silently
-    swallowing a 403/timeout into an empty `entries` list with no clue why."""
+    """Fetches the feed ourselves via requests (with browser-like headers),
+    sanitizes bare ampersands (see _BARE_AMPERSAND_RE above), and hands the
+    cleaned text to feedparser.parse() — instead of calling
+    feedparser.parse(url) directly, which gave us neither the real HTTP
+    status code on a block nor a chance to fix the un-escaped-ampersand
+    issue before the strict parser choked on it."""
     resp = requests.get(url, headers=_FEED_REQUEST_HEADERS, timeout=timeout)
     resp.raise_for_status()
-    parsed = feedparser.parse(resp.content)
+    encoding = resp.encoding or resp.apparent_encoding or "utf-8"
+    text = resp.content.decode(encoding, errors="replace")
+    text = _BARE_AMPERSAND_RE.sub("&amp;", text)
+    parsed = feedparser.parse(text)
     return parsed
 
 
