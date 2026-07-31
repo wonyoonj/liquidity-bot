@@ -362,47 +362,56 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
     }
 
 
-def pick_and_write_top4(candidates: list[dict]) -> list[dict] | None:
+def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | None:
     """Given a shortlist of today's Reuters Business & Finance candidate
     entries (title + short snippet only — never the full article), asks the
-    LLM to (1) choose the 4 most significant and CLEARLY DISTINCT stories,
-    and (2) write, for each, a short headline + one supporting-detail
-    bullet, all in ONE call, for the daily "Top 4 Headlines" post.
+    LLM to (1) choose the `count` most significant and CLEARLY DISTINCT
+    stories, and (2) write, for each, a short headline + one supporting-
+    detail bullet, all in ONE call, for the daily "Top N Headlines" post.
+
+    `count` defaults to 4, but callers pass a smaller number (e.g. 2 or 3)
+    on days when fewer fresh, undeduplicated candidates are available —
+    this function does NOT pad the list back up to 4 by inventing or
+    reusing stories; it writes up to however many genuinely distinct,
+    qualifying candidates exist, capped at `count`.
 
     Mirrors pick_and_write_news()'s copyright-safe design: candidates only
     ever carry short RSS snippets (already capped at 500 chars upstream),
     and the prompt explicitly instructs the model to paraphrase rather than
     reproduce source wording. Returns None (never fabricates a placeholder
-    item) if the LLM is unavailable, its output can't be parsed, or fewer
-    than 4 usable items come back — callers should treat that as "nothing
-    to post today" rather than post a short/broken list."""
+    item) only if the LLM is unavailable, its output can't be parsed, or
+    NOTHING usable comes back at all — callers should treat that (and only
+    that) as "nothing to post today"."""
     if not candidates:
         return None
+
+    count = max(1, min(count, len(candidates)))
 
     listing = "\n".join(
         f"[{i}] {c['title']} — {c['summary'][:220]}"
         for i, c in enumerate(candidates)
     )
+    item_schema = ", ".join(
+        ['{"selected_index": <int>, "headline": "...", "bullet": "..."}'] * count
+    )
     prompt = (
-        "You are curating a daily \"Top 4 Financial Headlines\" summary post for a social "
-        "media account, based on today's Reuters Business & Finance headlines below "
+        f"You are curating a daily \"Top {count} Financial Headlines\" summary post for a "
+        "social media account, based on today's Reuters Business & Finance headlines below "
         "(short snippets only, not full articles).\n\n"
         f"{listing}\n\n"
-        "Step 1: Choose the 4 most significant and CLEARLY DISTINCT stories — avoid picking "
-        "two entries about the same underlying event. Prefer market-moving stories: central "
-        "bank / interest rate policy, major market/index moves, commodities, and major "
-        "corporate earnings, when present among the candidates.\n"
-        "Step 2: For EACH of your 4 picks, write, entirely in your OWN words (never copy "
-        "phrasing from the snippet):\n"
+        f"Step 1: Choose the {count} most significant and CLEARLY DISTINCT stories — avoid "
+        "picking two entries about the same underlying event. Prefer market-moving stories: "
+        "central bank / interest rate policy, major market/index moves, commodities, and "
+        "major corporate earnings, when present among the candidates.\n"
+        "Step 2: For EACH pick, write, entirely in your OWN words (never copy phrasing from "
+        "the snippet):\n"
         "  - \"headline\": a short, punchy, non-clickbait headline, under 65 characters "
         "(e.g. \"US Fed Announces Interest Rate Outlook\").\n"
         "  - \"bullet\": ONE short supporting-detail sentence, under 110 characters, plain "
         "and factual — no hashtags, no emoji.\n\n"
-        "Respond with ONLY a JSON object, no markdown fences, no other text, exactly 4 items:\n"
-        '{"items": [{"selected_index": <int>, "headline": "...", "bullet": "..."}, '
-        '{"selected_index": <int>, "headline": "...", "bullet": "..."}, '
-        '{"selected_index": <int>, "headline": "...", "bullet": "..."}, '
-        '{"selected_index": <int>, "headline": "...", "bullet": "..."}]}'
+        f"Respond with ONLY a JSON object, no markdown fences, no other text, exactly "
+        f"{count} item(s):\n"
+        f'{{"items": [{item_schema}]}}'
     )
     try:
         raw = _call_llm(prompt, timeout=30).strip()
@@ -443,10 +452,10 @@ def pick_and_write_top4(candidates: list[dict]) -> list[dict] | None:
             "image_url": chosen.get("image_url"),
             "_article_link": chosen.get("link"),
         })
-        if len(results) == 4:
+        if len(results) == count:
             break
 
-    if len(results) < 4:
+    if not results:
         return None
     return results
 

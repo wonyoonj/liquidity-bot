@@ -111,19 +111,28 @@ def main() -> int:
         fresh = [c for c in candidates if c["id"] not in already_posted]
         print(f"  -> {len(fresh)} remaining after removing already-covered stories")
 
-        if len(fresh) < 4:
-            print("Fewer than 4 fresh candidates today — skipping silently "
+        if not fresh:
+            print("No fresh candidates today — skipping silently "
                   "(this is expected behavior, not an error).")
             return 0
+
+        # Post with as many distinct stories as are actually available today,
+        # up to 4 — 2 or 3 solid, genuinely distinct items is a perfectly
+        # fine post; we never pad the list by inventing or repeating a story
+        # just to reach 4.
+        target_count = min(len(fresh), 4)
 
         # Cap the shortlist sent to the LLM — keeps the prompt small/cheap.
         shortlist = fresh[:20]
 
-        print("[2/4] Asking the LLM to pick + write the top 4 headlines...")
-        items = pick_and_write_top4(shortlist)
+        print(f"[2/4] Asking the LLM to pick + write the top {target_count} headline(s)...")
+        items = pick_and_write_top4(shortlist, count=target_count)
         if not items:
-            print("LLM did not return 4 usable, distinct items today — skipping silently.")
+            print("LLM did not return any usable items today — skipping silently.")
             return 0
+        if len(items) < target_count:
+            print(f"  -> only {len(items)} distinct, usable item(s) came back "
+                  f"(asked for {target_count}) — posting with what's available.")
         for i, it in enumerate(items, start=1):
             print(f"  -> {i}. {it['headline']}")
 
