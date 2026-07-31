@@ -26,6 +26,7 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
 
 import feedparser
+import requests
 
 from lib.news_sources import REUTERS_TOP4_FEED_URL
 from lib.news_image import extract_feed_image_url
@@ -63,6 +64,33 @@ def us_today_label() -> str:
     return us_eastern_now().strftime("%b %-d, %Y")
 
 
+_FEED_REQUEST_HEADERS = {
+    # Reuters sits behind Cloudflare, which commonly 403s feedparser's
+    # default User-Agent ("feedparser/x.x +https://feedparser.org/"). A
+    # normal-browser UA avoids that block. This was the cause of the feed
+    # silently returning 0 entries on early runs — always fetch the raw
+    # bytes ourselves with these headers rather than letting feedparser.parse()
+    # do its own (bot-flagged) request.
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7",
+}
+
+
+def _fetch_feed_entries(url: str, timeout: int = 20):
+    """Fetches the feed ourselves via requests (with browser-like headers)
+    and hands the raw bytes to feedparser.parse(), instead of calling
+    feedparser.parse(url) directly. This gives us the actual HTTP status
+    code / exception on failure to log, instead of feedparser silently
+    swallowing a 403/timeout into an empty `entries` list with no clue why."""
+    resp = requests.get(url, headers=_FEED_REQUEST_HEADERS, timeout=timeout)
+    resp.raise_for_status()
+    parsed = feedparser.parse(resp.content)
+    return parsed
+
+
 def _entry_id(entry: dict) -> str:
     key = entry.get("link") or entry.get("title", "")
     return hashlib.sha256(key.strip().lower().encode("utf-8")).hexdigest()[:16]
@@ -93,12 +121,24 @@ def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List
     cutoff = datetime.now(timezone.utc) - timedelta(hours=fallback_hours)
 
     try:
-        parsed = feedparser.parse(REUTERS_TOP4_FEED_URL)
-        if parsed.bozo and not parsed.entries:
-            raise ValueError(f"feed did not parse cleanly: {parsed.bozo_exception}")
+        parsed = _fetch_feed_entries(REUTERS_TOP4_FEED_URL)
+        if not parsed.entries:
+            reason = getattr(parsed, "bozo_exception", None) or "feed parsed but contained 0 entries"
+            print(f"[top4_fetcher] WARN: Reuters feed returned 0 entries ({reason})", file=sys.stderr)
+            return []
+    except requests.exceptions.HTTPError as e:
+        print(f"[top4_fetcher] WARN: Reuters feed request failed with HTTP "
+              f"{e.response.status_code if e.response is not None else '?'} "
+              f"— likely blocked by Cloudflare/bot-protection: {e}", file=sys.stderr)
+        return []
+    except requests.exceptions.RequestException as e:
+        print(f"[top4_fetcher] WARN: Reuters feed request failed ({type(e).__name__}: {e})", file=sys.stderr)
+        return []
     except Exception as e:  # noqa: BLE001
         print(f"[top4_fetcher] WARN: Reuters feed failed to load ({e})", file=sys.stderr)
         return []
+
+    print(f"[top4_fetcher] Reuters feed OK — {len(parsed.entries)} raw entries returned")
 
     same_day: List[Dict] = []
     recent_fallback: List[Dict] = []
