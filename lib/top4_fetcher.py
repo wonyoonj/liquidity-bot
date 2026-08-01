@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import sys
 import re
+import html
 import hashlib
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
@@ -107,9 +108,39 @@ def _fetch_feed_entries(url: str, timeout: int = 20):
     return parsed
 
 
-def _entry_id(entry: dict) -> str:
-    key = entry.get("link") or entry.get("title", "")
-    return hashlib.sha256(key.strip().lower().encode("utf-8")).hexdigest()[:16]
+# Google News RSS appends " - <Source Name>" to every title (e.g.
+# "Fed holds rates steady - Reuters"). Strip that suffix so the LLM (and any
+# future display of the raw title) sees a clean headline, not the source
+# tag glued onto it.
+_TITLE_SOURCE_SUFFIX_RE = re.compile(r"\s+-\s+[^-]{2,40}$")
+
+# Google News RSS wraps each item's <description> in an HTML <a> link plus
+# occasional extra markup rather than plain text — strip tags down to plain
+# text before we use it as LLM context.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _clean_google_news_title(raw_title: str) -> str:
+    return _TITLE_SOURCE_SUFFIX_RE.sub("", raw_title).strip()
+
+
+def _clean_summary_html(raw_summary: str) -> str:
+    text = _HTML_TAG_RE.sub(" ", raw_summary)
+    text = html.unescape(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    # Google News often tacks the bare source name onto the very end of the
+    # description after tags are stripped (e.g. "...moderates. Reuters") —
+    # drop a trailing "Reuters" token so it doesn't read as part of the story.
+    text = re.sub(r"\s+Reuters\s*$", "", text, flags=re.IGNORECASE).strip()
+    return text
+
+
+def _entry_id(title: str) -> str:
+    # Title-based (not link-based): Google News article links carry an
+    # opaque per-request redirect token, which is far less stable across
+    # separate fetches than the headline text itself — a link-based hash
+    # would break same-story dedup between runs.
+    return hashlib.sha256(title.strip().lower().encode("utf-8")).hexdigest()[:16]
 
 
 def _parse_published(entry) -> Optional[datetime]:
@@ -140,28 +171,31 @@ def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List
         parsed = _fetch_feed_entries(REUTERS_TOP4_FEED_URL)
         if not parsed.entries:
             reason = getattr(parsed, "bozo_exception", None) or "feed parsed but contained 0 entries"
-            print(f"[top4_fetcher] WARN: Reuters feed returned 0 entries ({reason})", file=sys.stderr)
+            print(f"[top4_fetcher] WARN: Reuters (via Google News) feed returned 0 entries ({reason})", file=sys.stderr)
             return []
     except requests.exceptions.HTTPError as e:
-        print(f"[top4_fetcher] WARN: Reuters feed request failed with HTTP "
-              f"{e.response.status_code if e.response is not None else '?'} "
-              f"— likely blocked by Cloudflare/bot-protection: {e}", file=sys.stderr)
+        print(f"[top4_fetcher] WARN: Reuters (via Google News) feed request failed with HTTP "
+              f"{e.response.status_code if e.response is not None else '?'}: {e}", file=sys.stderr)
         return []
     except requests.exceptions.RequestException as e:
-        print(f"[top4_fetcher] WARN: Reuters feed request failed ({type(e).__name__}: {e})", file=sys.stderr)
+        print(f"[top4_fetcher] WARN: Reuters (via Google News) feed request failed "
+              f"({type(e).__name__}: {e})", file=sys.stderr)
         return []
     except Exception as e:  # noqa: BLE001
-        print(f"[top4_fetcher] WARN: Reuters feed failed to load ({e})", file=sys.stderr)
+        print(f"[top4_fetcher] WARN: Reuters (via Google News) feed failed to load ({e})", file=sys.stderr)
         return []
 
-    print(f"[top4_fetcher] Reuters feed OK — {len(parsed.entries)} raw entries returned")
+    print(f"[top4_fetcher] Reuters (via Google News) feed OK — {len(parsed.entries)} raw entries returned")
 
     same_day: List[Dict] = []
     recent_fallback: List[Dict] = []
     seen_ids = set()
 
     for entry in parsed.entries[:max_entries]:
-        title = (entry.get("title") or "").strip()
+        raw_title = (entry.get("title") or "").strip()
+        if not raw_title:
+            continue
+        title = _clean_google_news_title(raw_title)
         if not title:
             continue
 
@@ -169,7 +203,7 @@ def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List
         if not published or published < cutoff:
             continue
 
-        entry_id = _entry_id(entry)
+        entry_id = _entry_id(title)
         if entry_id in seen_ids:
             continue
         seen_ids.add(entry_id)
@@ -177,10 +211,10 @@ def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List
         record = {
             "id": entry_id,
             "title": title,
-            # only a short snippet is ever kept — used as LLM context only,
-            # never reproduced verbatim (same copyright-safe design as
-            # news_fetcher.py)
-            "summary": (entry.get("summary") or entry.get("description") or "").strip()[:500],
+            # only a short, plain-text snippet is ever kept — used as LLM
+            # context only, never reproduced verbatim (same copyright-safe
+            # design as news_fetcher.py)
+            "summary": _clean_summary_html(entry.get("summary") or entry.get("description") or "")[:500],
             "link": entry.get("link", ""),
             "image_url": extract_feed_image_url(entry),
             "source_name": "Reuters",

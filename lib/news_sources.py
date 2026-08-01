@@ -20,7 +20,23 @@ sources are still live. Worth spot-checking this list every few months.
 # different shape: exactly one trusted wire source, no keyword prefilter
 # needed since the feed itself is already scoped to business/finance, and
 # "today" means the US/Eastern calendar date rather than a rolling window.
-REUTERS_TOP4_FEED_URL = "https://www.reutersagency.com/feed/?best-topics=business-finance&post_type=best"
+#
+# NOTE: Reuters retired its old public syndication feed
+# (reutersagency.com/feed/?best-topics=...) — it now 404s. reuters.com
+# itself does not publish an official public RSS feed either (Reuters news
+# is distributed commercially via LSEG). The standard workaround, used
+# widely since Reuters dropped public RSS, is a Google News RSS search
+# scoped to reuters.com via `site:` — this returns ONLY reuters.com
+# articles (real Reuters reporting, Reuters byline/attribution preserved),
+# just delivered through Google News' still-public RSS endpoint instead of
+# a dead Reuters-hosted one. `when:2d` keeps the pool to the last two days;
+# fetch_today_entries() below still does its own precise US/Eastern
+# "today" filtering (plus a 36h fallback) on top of this.
+REUTERS_TOP4_FEED_URL = (
+    "https://news.google.com/rss/search?q=site%3Areuters.com+"
+    "(business+OR+markets+OR+economy+OR+finance+OR+earnings)+when%3A2d"
+    "&hl=en-US&gl=US&ceid=US:en"
+)
 
 NEWS_SOURCES = [
     # --- Official / primary sources (highest trust) ---
