@@ -134,10 +134,49 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
 def _call_llm(prompt: str, timeout: int = 20) -> str:
     """Shared dispatch + logging wrapper. Every public generate_* function
     below should call this instead of _call_openai/_call_gemini directly, so
-    failures are ALWAYS logged in exactly one place, consistently."""
-    provider = os.environ.get("LLM_PROVIDER", "gemini").lower()
-    caller = _call_openai if provider == "openai" else _call_gemini
-    return caller(prompt, timeout=timeout)
+    failures are ALWAYS logged in exactly one place, consistently.
+
+    Tries the preferred provider (LLM_PROVIDER env var, default 'gemini')
+    first, then AUTOMATICALLY falls back to the other configured provider
+    if the preferred one fails for any reason — quota/billing exhausted,
+    outage, bad key, whatever. This means a quota problem on one provider
+    no longer takes the whole pipeline down as long as the other has room;
+    previously a single LLM_PROVIDER choice was a hard single point of
+    failure. The fallback is only attempted if the OTHER provider's API key
+    is actually set — no point trying a provider with no key configured.
+
+    Raises only if every configured provider failed (or none are
+    configured) — callers already treat a raised/None result as "skip this
+    run" rather than crashing."""
+    preferred = os.environ.get("LLM_PROVIDER", "gemini").lower()
+    providers = {
+        "gemini": ("GEMINI_API_KEY", _call_gemini),
+        "openai": ("OPENAI_API_KEY", _call_openai),
+    }
+    order = [preferred] + [name for name in providers if name != preferred]
+
+    last_error: Optional[Exception] = None
+    attempted = []
+    for name in order:
+        api_key_env, caller = providers.get(name, (None, None))
+        if caller is None:
+            continue  # unrecognized LLM_PROVIDER value — skip, don't crash
+        if not os.environ.get(api_key_env):
+            continue  # this provider has no key configured at all — skip silently
+        attempted.append(name)
+        try:
+            return caller(prompt, timeout=timeout)
+        except Exception as e:  # noqa: BLE001
+            last_error = e
+            remaining = [n for n in order if n not in attempted and os.environ.get(providers[n][0])]
+            print(f"[llm_content] {name} call failed ({e}); "
+                  f"{'falling back to ' + remaining[0] + '...' if remaining else 'no other provider configured to fall back to.'}")
+
+    if not attempted:
+        raise RuntimeError(
+            "No LLM provider is configured — set GEMINI_API_KEY and/or OPENAI_API_KEY."
+        )
+    raise RuntimeError(f"All configured LLM providers failed ({', '.join(attempted)}). Last error: {last_error}")
 
 
 def _fallback_sentence(metrics: dict, angle: str) -> str:
