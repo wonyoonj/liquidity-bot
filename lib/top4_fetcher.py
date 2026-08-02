@@ -189,6 +189,7 @@ def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List
 
     same_day: List[Dict] = []
     recent_fallback: List[Dict] = []
+    all_valid_entries: List[Dict] = []  # 안전장치: 날짜 파싱 이슈 발생 시 사용할 전체 풀
     seen_ids = set()
 
     for entry in parsed.entries[:max_entries]:
@@ -199,32 +200,46 @@ def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List
         if not title:
             continue
 
-        published = _parse_published(entry)
-        if not published or published < cutoff:
-            continue
-
         entry_id = _entry_id(title)
         if entry_id in seen_ids:
             continue
         seen_ids.add(entry_id)
 
+        published = _parse_published(entry)
+
         record = {
             "id": entry_id,
             "title": title,
-            # only a short, plain-text snippet is ever kept — used as LLM
-            # context only, never reproduced verbatim (same copyright-safe
-            # design as news_fetcher.py)
             "summary": _clean_summary_html(entry.get("summary") or entry.get("description") or "")[:500],
             "link": entry.get("link", ""),
             "image_url": extract_feed_image_url(entry),
             "source_name": "Reuters",
-            "published": published.isoformat(),
+            "published": published.isoformat() if published else datetime.now(timezone.utc).isoformat(),
         }
-        recent_fallback.append(record)
 
-        if (published + _eastern_offset_for(published)).date() == today_et:
-            same_day.append(record)
+        # 유효한 항목은 일단 무조건 수집해 둡니다.
+        all_valid_entries.append(record)
 
-    print(f"[top4_fetcher] {len(same_day)} entries dated today (US/Eastern: {today_et}), "
-          f"{len(recent_fallback)} within last {fallback_hours}h as fallback pool")
-    return same_day if same_day else recent_fallback
+        if published:
+            if published >= cutoff:
+                recent_fallback.append(record)
+            if (published + _eastern_offset_for(published)).date() == today_et:
+                same_day.append(record)
+
+    print(f"[top4_fetcher] {len(same_day)} dated today (US/Eastern: {today_et}), "
+          f"{len(recent_fallback)} within last {fallback_hours}h, "
+          f"{len(all_valid_entries)} total valid entries raw.")
+
+    # 1순위: 오늘 날짜 기사
+    if same_day:
+        return same_day
+    # 2순위: 지정 시간(fallback_hours) 내 최근 기사
+    if recent_fallback:
+        return recent_fallback
+    # 3순위 (핵심 수정): Google News 날짜 파싱이 깨져서 전부 필터링되었을 경우,
+    # 비어있는 []를 넘겨서 LLM 세 개가 연쇄 폭발하는 것을 막기 위해 최신 수집 목록을 강제 반환합니다.
+    if all_valid_entries:
+        print("[top4_fetcher] NOTICE: 날짜 조건에 엄격히 부합하는 기사가 없어 수집된 최신 항목을 반환합니다.", file=sys.stderr)
+        return all_valid_entries
+
+    return []
