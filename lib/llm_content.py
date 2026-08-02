@@ -72,7 +72,7 @@ def _call_gemini(prompt: str, timeout: int = 20) -> str:
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     
     # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent"
     
     resp = requests.post(
         url,
@@ -99,7 +99,7 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     
     # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
-    url = "https://api.openai.com/v1/chat/completions"
+    url = "[https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)"
     
     resp = requests.post(
         url,
@@ -128,7 +128,7 @@ def _call_groq(prompt: str, timeout: int = 20) -> str:
     model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     
     # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
-    url = "https://api.groq.com/openai/v1/chat/completions"
+    url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)"
     
     resp = requests.post(
         url,
@@ -323,13 +323,19 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
         raw = _call_llm(prompt, timeout=25)
         clean_json = _extract_json_str(raw)
         data = json.loads(clean_json)
+        
+        # ✅ 타입 방어 로직 추가: dict가 반환되지 않았을 때의 Crash 방지
+        if not isinstance(data, dict):
+            raise ValueError(f"LLM did not return a JSON object. Got {type(data).__name__}")
+            
+        idx = data.get("selected_index", -1)
+        if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
+            raise ValueError(f"Invalid selected_index: {idx}")
+            
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] pick_and_write_news failed/unparseable: {e}")
         return None
 
-    idx = data.get("selected_index", -1)
-    if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
-        return None
     if not all(data.get(k) for k in ("headline", "summary", "impact")):
         return None
 
@@ -378,15 +384,26 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
         f"{count} item(s):\n"
         f'{{"items": [{item_schema}]}}'
     )
+    
+    items = None
     try:
         raw = _call_llm(prompt, timeout=30)
         clean_json = _extract_json_str(raw)
         data = json.loads(clean_json)
+        
+        # ✅ 치명적 버그 수정: LLM이 "items" 키 없이 곧바로 리스트 [...] 를 반환하는 경우를 대응.
+        # 또한, data.get()을 try-except 밖에서 호출하여 발생하는 AttributeError Crash 방지.
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            items = data.get("items")
+        else:
+            raise ValueError(f"Unexpected JSON root type: {type(data).__name__}")
+            
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] pick_and_write_top4 failed/unparseable: {e}")
         return None
 
-    items = data.get("items")
     if not isinstance(items, list):
         return None
 
