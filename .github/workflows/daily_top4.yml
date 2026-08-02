@@ -42,6 +42,7 @@ jobs:
           LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}       # "gemini" or "openai" — REQUIRED for this feature
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python daily_top4.py
 
       - name: Upload generated card (debugging, 7-day retention)
