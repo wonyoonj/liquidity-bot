@@ -28,7 +28,6 @@ ANGLE_INSTRUCTIONS = {
 
 def _extract_json_str(text: str) -> str:
     """Helper to extract clean JSON object string from LLM responses even if they
-
     contain markdown tags or conversational filler.
     """
     text = text.strip()
