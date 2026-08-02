@@ -72,7 +72,7 @@ def _call_gemini(prompt: str, timeout: int = 20) -> str:
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     
     # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/"
     
     resp = requests.post(
         url,
@@ -99,7 +99,7 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     
     # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
-    url = "[https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)"
+    url = "https://api.openai.com/v1/chat/completions"
     
     resp = requests.post(
         url,
@@ -128,7 +128,7 @@ def _call_groq(prompt: str, timeout: int = 20) -> str:
     model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     
     # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
-    url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)"
+    url = "https://api.groq.com/openai/v1/chat/completions"
     
     resp = requests.post(
         url,
