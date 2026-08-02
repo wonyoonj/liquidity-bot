@@ -1,49 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Uses an LLM (Gemini or OpenAI, your choice via LLM_PROVIDER env var) to write
-a single varied "angle" sentence for the daily snapshot, so the same number
-doesn't get the same boring caption every day (see idea list: comparison /
-record / cause / question / warning angles).
+Uses an LLM (Gemini, OpenAI, or Groq via LLM_PROVIDER env var) to write
+daily financial commentary, snapshot captions, and curated news posts.
 
-Design choice: if the LLM call fails for ANY reason (no key, rate limit,
-network hiccup), we fall back to a deterministic template so the daily post
-NEVER fails just because of the commentary layer. The core numbers always
-ship; the LLM only adds flavor on top.
-
-v2 fix: every fallback path now PRINTS the real exception before falling
-back. Previously all `except Exception:` blocks swallowed the error
-silently, which made a real, ongoing LLM failure look identical to "working
-normally, just using the fallback occasionally" in the Action logs — there
-was no way to tell them apart. If you see "[llm_content] ... failed:" lines
-in your logs now, that tells you definitively that every post is running on
-fallback templates, and shows you the actual reason (bad key, wrong model
-name, rate limit, timeout, etc.).
-
-v2 fix 2: generate_why_it_matters()'s fallback sentence no longer starts
-with "This matters because..." — every caller already prepends its own
-"Why it matters:" / "Why it matters right now:" label, so the old fallback
-text produced a visible double-up ("Why it matters: This matters
-because..."). Fixed to be a plain sentence with no redundant lead-in.
-
-v3 fix: the OLD fallback sentence was a single fixed template
-("{topic} is a direct input into current US dollar liquidity conditions,
-which tend to move alongside broader asset prices.") reused for every
-single topic. Under sustained LLM-provider errors (e.g. an exhausted
-OpenAI quota — a real, observed failure mode, not hypothetical) EVERY post
-falls back, and readers correctly noticed the exact same sentence showing
-up post after post regardless of topic — it reads as an obviously
-automated dashboard alert, not a piece of written analysis. generate_why_
-it_matters() now accepts an optional `assessment` (see
-lib/indicator_thresholds.py) and, when the LLM call fails, builds the
-fallback from that instead: a real good/bad status by an explicit standard
-plus a trend-based risk note computed from actual data. Different topics
-now get genuinely different fallback text, and the same explicit standard
-that generated the fallback ALSO gets used to ground the LLM prompt when
-the call does succeed, so the two paths agree with each other.
+Includes robust multi-provider failover (Gemini -> OpenAI -> Groq)
+and deterministic text fallbacks if all LLMs fail.
 """
 from __future__ import annotations
 
 import os
+import re
 import json
 import random
 import requests
@@ -58,6 +24,26 @@ ANGLE_INSTRUCTIONS = {
     "question": "End with a short, genuinely open-ended question inviting readers to share their read on this week's number. Do not answer it yourself.",
     "warning": "If (and only if) this week represents a meaningful shift in direction (e.g. crossing from supply to drain or vice versa), frame it as a notable turning point. Otherwise pick a neutral observation instead.",
 }
+
+
+def _extract_json_str(text: str) -> str:
+    """Helper to extract clean JSON object string from LLM responses even if they
+
+    contain markdown tags or conversational filler.
+    """
+    text = text.strip()
+    # Strip markdown code fences if present
+    if "```" in text:
+        match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+    # Find first { or [ and last } or ]
+    match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    return text
 
 
 def _build_prompt(metrics: dict, angle: str) -> str:
@@ -84,26 +70,18 @@ def _call_gemini(prompt: str, timeout: int = 20) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
-    # NOTE: gemini-2.0-flash was deprecated by Google in early 2026 and
-    # requests to it get shunted into a zero-quota "free_tier_requests"
-    # bucket regardless of project/billing state — this was the actual root
-    # cause of persistent 429s here, even on a brand-new project. fred-data
-    # (a sibling repo) uses gemini-2.5-flash and has never hit this;
-    # switching the default here to match fixes it without touching keys.
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent"
     resp = requests.post(
         url,
         params={"key": api_key},
         json={
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.9, "maxOutputTokens": 120},
+            "generationConfig": {"temperature": 0.9, "maxOutputTokens": 300},
         },
         timeout=timeout,
     )
     if not resp.ok:
-        # Surface the API's own error body — this is usually the single most
-        # useful line for diagnosing "why is this always falling back".
         raise RuntimeError(f"Gemini API {resp.status_code}: {resp.text[:300]}")
     data = resp.json()
     try:
@@ -118,13 +96,13 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
         raise RuntimeError("OPENAI_API_KEY not set")
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     resp = requests.post(
-        "https://api.openai.com/v1/chat/completions",
+        "[https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)",
         headers={"Authorization": f"Bearer {api_key}"},
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.9,
-            "max_tokens": 120,
+            "max_tokens": 300,
         },
         timeout=timeout,
     )
@@ -138,27 +116,18 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
 
 
 def _call_groq(prompt: str, timeout: int = 20) -> str:
-    """Groq (console.groq.com) — free, no-credit-card tier: 14,400 requests/
-    day, 30 RPM, OpenAI-compatible chat/completions endpoint, so this reuses
-    the exact same request/response shape as _call_openai() above, just
-    pointed at a different host + open-source model. Added as a genuinely-
-    free third option after repeatedly hitting a Google-side bug where a
-    brand-new Gemini project's free tier gets stuck reporting
-    generate_content_free_tier_requests quota = 0 even though the Cloud
-    Console quota page shows "unlimited" — see the conversation this was
-    added from. Groq has no such issue and needs no billing/card at all."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
         raise RuntimeError("GROQ_API_KEY not set")
     model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     resp = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
+        "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)",
         headers={"Authorization": f"Bearer {api_key}"},
         json={
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.9,
-            "max_tokens": 120,
+            "max_tokens": 300,
         },
         timeout=timeout,
     )
@@ -172,28 +141,11 @@ def _call_groq(prompt: str, timeout: int = 20) -> str:
 
 
 def _call_llm(prompt: str, timeout: int = 20) -> str:
-    """Shared dispatch + logging wrapper. Every public generate_* function
-    below should call this instead of _call_openai/_call_gemini/_call_groq
-    directly, so failures are ALWAYS logged in exactly one place,
-    consistently.
-
-    Tries the preferred provider (LLM_PROVIDER env var, default 'gemini')
-    first, then AUTOMATICALLY falls back through the other configured
-    providers, in this fixed order after the preferred one:
-    gemini -> openai -> groq (minus whichever was already tried first).
-    This means a quota/billing problem on ANY ONE provider no longer takes
-    the whole pipeline down as long as another has room. The fallback to a
-    given provider is only attempted if that provider's API key is actually
-    set — no point trying one with no key configured.
-
-    Raises only if every configured provider failed (or none are
-    configured) — callers already treat a raised/None result as "skip this
-    run" rather than crashing."""
     preferred = os.environ.get("LLM_PROVIDER", "gemini").lower()
     providers = {
         "gemini": ("GEMINI_API_KEY", _call_gemini),
+        "groq": ("GROQ_API_KEY", _call_groq),      # Groq를 2순위로 우선 배치
         "openai": ("OPENAI_API_KEY", _call_openai),
-        "groq": ("GROQ_API_KEY", _call_groq),
     }
     order = [preferred] + [name for name in providers if name != preferred]
 
@@ -201,10 +153,8 @@ def _call_llm(prompt: str, timeout: int = 20) -> str:
     attempted = []
     for name in order:
         api_key_env, caller = providers.get(name, (None, None))
-        if caller is None:
-            continue  # unrecognized LLM_PROVIDER value — skip, don't crash
-        if not os.environ.get(api_key_env):
-            continue  # this provider has no key configured at all — skip silently
+        if caller is None or not os.environ.get(api_key_env):
+            continue
         attempted.append(name)
         try:
             return caller(prompt, timeout=timeout)
@@ -212,17 +162,16 @@ def _call_llm(prompt: str, timeout: int = 20) -> str:
             last_error = e
             remaining = [n for n in order if n not in attempted and os.environ.get(providers[n][0])]
             print(f"[llm_content] {name} call failed ({e}); "
-                  f"{'falling back to ' + remaining[0] + '...' if remaining else 'no other provider configured to fall back to.'}")
+                  f"{'falling back to ' + remaining[0] + '...' if remaining else 'no other provider configured.'}")
 
     if not attempted:
         raise RuntimeError(
-            "No LLM provider is configured — set GEMINI_API_KEY, OPENAI_API_KEY, and/or GROQ_API_KEY."
+            "No LLM provider is configured — set GEMINI_API_KEY, GROQ_API_KEY, and/or OPENAI_API_KEY."
         )
     raise RuntimeError(f"All configured LLM providers failed ({', '.join(attempted)}). Last error: {last_error}")
 
 
 def _fallback_sentence(metrics: dict, angle: str) -> str:
-    """Deterministic, no-API-needed backup so the pipeline never breaks."""
     net = metrics.get("net_market_flow", 0)
     avg = metrics.get("avg")
     if angle == "comparison" and avg is not None:
@@ -236,26 +185,6 @@ def _fallback_sentence(metrics: dict, angle: str) -> str:
 
 
 def generate_why_it_matters(topic_label: str, context: str, assessment: Optional[dict] = None) -> str:
-    """Short (1-2 sentence), calm, informational explanation of WHY a given
-    data point/signal is worth paying attention to right now — used on
-    Monday/Wednesday/Thursday/Friday and the urgent scanner. Tone matches
-    the rest of this bot: matter-of-fact, no hype, no exclamation marks, no
-    emoji, no hashtags. Falls back to a deterministic, per-topic template
-    sentence if the LLM call fails, per this module's fail-open design —
-    the post never goes out without SOME explanation.
-
-    `assessment` (optional): the dict returned by
-    lib/indicator_thresholds.assess() for this topic's ticker — an explicit
-    good/bad status plus a trend-based risk note, computed straight from
-    the chart data. When given, it's used to (a) ground the LLM prompt so
-    the model's own answer doesn't contradict the data-driven status, and
-    (b) build a topic-specific fallback if the LLM call fails, instead of
-    the old one-size-fits-all sentence.
-
-    NOTE: the fallback text deliberately does NOT start with "Why it
-    matters" / "This matters because" — every caller already prepends its
-    own "Why it matters:" label onto whatever this returns, so doing it here
-    too would double up (this was a real bug — see module docstring)."""
     assessment_line = ""
     if assessment and assessment.get("status") not in (None, "unknown"):
         assessment_line = (
@@ -291,10 +220,6 @@ def generate_why_it_matters(topic_label: str, context: str, assessment: Optional
 
 
 def generate_calendar_commentary(top_event: dict, other_events: list[dict]) -> str:
-    """Tuesday content: 2-3 calm, informational sentences on why the single
-    most important upcoming release this month is worth watching, with a
-    brief nod to the other top releases. Falls back to a template sentence
-    if the LLM call fails."""
     others = ", ".join(e["name"] for e in other_events if e is not top_event) or "no other major releases"
     prompt = (
         "In ONE short sentence (under 160 characters total), tell a retail investor "
@@ -327,21 +252,7 @@ def generate_angle_commentary(metrics: dict, angle: str | None = None) -> str:
 
 
 def generate_fact_caption(fact_text: str, ticker: str, current_value: float, unit: str,
-                            site_url: str, why_it_matters: str = "", status_line: str = "") -> str:
-    """Barchart-style single-fact caption. The fact itself (fact_text) is
-    already numerically grounded and deterministic (see signal_scanner.py) —
-    the LLM's only job is to rephrase it into a punchier, more natural-sounding
-    single sentence, in the terse 'headline + emoji' style, NOT to add new
-    claims or explanation. Falls back to the raw fact_text unmodified if the
-    LLM is unavailable, which is already a perfectly usable caption on its own.
-    No hashtags by design (see reach-strategy notes in daily_post.py).
-
-    `status_line` (optional): typically the output of lib.indicator_thresholds.
-    format_status_short() — an explicit good/bad-by-what-standard label,
-    rendered above the "Why it matters" line so the reader sees a clear
-    judgment call, not just a data point. Use the _short (label-only)
-    variant here, not format_status_line(), since the latter's risk note
-    would duplicate what why_it_matters already says."""
+                          site_url: str, why_it_matters: str = "", status_line: str = "") -> str:
     prompt = (
         "Rewrite the following financial fact as ONE punchy headline-style sentence "
         "for a social media post, in the terse style of accounts like Barchart "
@@ -359,7 +270,7 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
         headline = _call_llm(prompt).strip()
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] generate_fact_caption failed, using raw fact_text: {e}")
-        headline = fact_text  # the deterministic fact is already a valid caption on its own
+        headline = fact_text
 
     parts = [headline]
     if status_line:
@@ -371,18 +282,6 @@ def generate_fact_caption(fact_text: str, ticker: str, current_value: float, uni
 
 
 def pick_and_write_news(candidates: list[dict]) -> dict | None:
-    """Given a shortlist of candidate news entries (title + short snippet
-    only — never the full article), asks the LLM to (1) pick the single one
-    most relevant to USD market liquidity / Fed policy / rates, and (2) write
-    a short paraphrased summary + a plain expected-impact line, all in ONE
-    call. Returns None if the LLM is unavailable or its output can't be
-    parsed — callers should treat that as "nothing to post today" rather
-    than crash, since fabricating a pick without grounding would be worse.
-
-    COPYRIGHT NOTE: candidates only carry short RSS snippets (already capped
-    at 500 chars upstream), and the prompt explicitly instructs the model to
-    paraphrase rather than reproduce source wording — consistent with this
-    project's copyright-safe-by-design approach throughout."""
     if not candidates:
         return None
 
@@ -411,12 +310,9 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
         '{"selected_index": <int>, "headline": "...", "summary": "...", "impact": "..."}'
     )
     try:
-        raw = _call_llm(prompt, timeout=25).strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw)
+        raw = _call_llm(prompt, timeout=25)
+        clean_json = _extract_json_str(raw)
+        data = json.loads(clean_json)
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] pick_and_write_news failed/unparseable: {e}")
         return None
@@ -435,34 +331,12 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
         "headline": data["headline"].strip(),
         "summary": data["summary"].strip(),
         "impact": data["impact"].strip(),
-        # Internal-only fields — used solely to fetch a real lead photo for
-        # the news card (see lib/news_image.py). Never surfaced in any
-        # caption or shown to the reader; this feature carries zero links.
         "image_url": chosen.get("image_url"),
         "_article_link": chosen.get("link"),
     }
 
 
 def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | None:
-    """Given a shortlist of today's Reuters Business & Finance candidate
-    entries (title + short snippet only — never the full article), asks the
-    LLM to (1) choose the `count` most significant and CLEARLY DISTINCT
-    stories, and (2) write, for each, a short headline + one supporting-
-    detail bullet, all in ONE call, for the daily "Top N Headlines" post.
-
-    `count` defaults to 4, but callers pass a smaller number (e.g. 2 or 3)
-    on days when fewer fresh, undeduplicated candidates are available —
-    this function does NOT pad the list back up to 4 by inventing or
-    reusing stories; it writes up to however many genuinely distinct,
-    qualifying candidates exist, capped at `count`.
-
-    Mirrors pick_and_write_news()'s copyright-safe design: candidates only
-    ever carry short RSS snippets (already capped at 500 chars upstream),
-    and the prompt explicitly instructs the model to paraphrase rather than
-    reproduce source wording. Returns None (never fabricates a placeholder
-    item) only if the LLM is unavailable, its output can't be parsed, or
-    NOTHING usable comes back at all — callers should treat that (and only
-    that) as "nothing to post today"."""
     if not candidates:
         return None
 
@@ -495,12 +369,9 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
         f'{{"items": [{item_schema}]}}'
     )
     try:
-        raw = _call_llm(prompt, timeout=30).strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        data = json.loads(raw)
+        raw = _call_llm(prompt, timeout=30)
+        clean_json = _extract_json_str(raw)
+        data = json.loads(clean_json)
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] pick_and_write_top4 failed/unparseable: {e}")
         return None
@@ -528,8 +399,6 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
             "title": chosen["title"],
             "headline": headline,
             "bullet": bullet,
-            # internal-only — used solely to fetch a real photo if the caller
-            # wants one; never surfaced in the caption/card as a link
             "image_url": chosen.get("image_url"),
             "_article_link": chosen.get("link"),
         })
@@ -542,8 +411,6 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
 
 
 def generate_open_question(indicator_label: str, context_note: str = "") -> str:
-    """Idea #10: an open opinion question about a specific liquidity indicator,
-    for Sunday content / Threads engagement posts."""
     prompt = (
         "Write ONE short, genuinely open-ended question (under 200 characters, plain text, "
         f"no hashtags) inviting an English-speaking finance audience to share their opinion "
