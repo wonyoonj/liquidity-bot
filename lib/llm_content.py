@@ -71,8 +71,8 @@ def _call_gemini(prompt: str, timeout: int = 20) -> str:
         raise RuntimeError("GEMINI_API_KEY not set")
     model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     
-    # URL 마크다운 문법 제거 -> 순수 URL 문자열로 수정
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent"
+    # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     
     resp = requests.post(
         url,
@@ -98,8 +98,8 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
         raise RuntimeError("OPENAI_API_KEY not set")
     model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
     
-    # URL 마크다운 문법 제거 -> 순수 URL 문자열로 수정
-    url = "[https://api.openai.com/v1/chat/completions](https://api.openai.com/v1/chat/completions)"
+    # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
+    url = "https://api.openai.com/v1/chat/completions"
     
     resp = requests.post(
         url,
@@ -127,8 +127,8 @@ def _call_groq(prompt: str, timeout: int = 20) -> str:
         raise RuntimeError("GROQ_API_KEY not set")
     model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
     
-    # URL 마크다운 문법 제거 -> 순수 URL 문자열로 수정
-    url = "[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)"
+    # ✅ 수정됨: 마크다운 문법을 제거한 순수 URL
+    url = "https://api.groq.com/openai/v1/chat/completions"
     
     resp = requests.post(
         url,
