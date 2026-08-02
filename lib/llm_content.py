@@ -84,7 +84,13 @@ def _call_gemini(prompt: str, timeout: int = 20) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY not set")
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+    # NOTE: gemini-2.0-flash was deprecated by Google in early 2026 and
+    # requests to it get shunted into a zero-quota "free_tier_requests"
+    # bucket regardless of project/billing state — this was the actual root
+    # cause of persistent 429s here, even on a brand-new project. fred-data
+    # (a sibling repo) uses gemini-2.5-flash and has never hit this;
+    # switching the default here to match fixes it without touching keys.
+    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     resp = requests.post(
         url,
@@ -131,19 +137,54 @@ def _call_openai(prompt: str, timeout: int = 20) -> str:
         raise RuntimeError(f"OpenAI response shape unexpected: {data}") from e
 
 
+def _call_groq(prompt: str, timeout: int = 20) -> str:
+    """Groq (console.groq.com) — free, no-credit-card tier: 14,400 requests/
+    day, 30 RPM, OpenAI-compatible chat/completions endpoint, so this reuses
+    the exact same request/response shape as _call_openai() above, just
+    pointed at a different host + open-source model. Added as a genuinely-
+    free third option after repeatedly hitting a Google-side bug where a
+    brand-new Gemini project's free tier gets stuck reporting
+    generate_content_free_tier_requests quota = 0 even though the Cloud
+    Console quota page shows "unlimited" — see the conversation this was
+    added from. Groq has no such issue and needs no billing/card at all."""
+    api_key = os.environ.get("GROQ_API_KEY")
+    if not api_key:
+        raise RuntimeError("GROQ_API_KEY not set")
+    model = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+    resp = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}"},
+        json={
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.9,
+            "max_tokens": 120,
+        },
+        timeout=timeout,
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Groq API {resp.status_code}: {resp.text[:300]}")
+    data = resp.json()
+    try:
+        return data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError) as e:
+        raise RuntimeError(f"Groq response shape unexpected: {data}") from e
+
+
 def _call_llm(prompt: str, timeout: int = 20) -> str:
     """Shared dispatch + logging wrapper. Every public generate_* function
-    below should call this instead of _call_openai/_call_gemini directly, so
-    failures are ALWAYS logged in exactly one place, consistently.
+    below should call this instead of _call_openai/_call_gemini/_call_groq
+    directly, so failures are ALWAYS logged in exactly one place,
+    consistently.
 
     Tries the preferred provider (LLM_PROVIDER env var, default 'gemini')
-    first, then AUTOMATICALLY falls back to the other configured provider
-    if the preferred one fails for any reason — quota/billing exhausted,
-    outage, bad key, whatever. This means a quota problem on one provider
-    no longer takes the whole pipeline down as long as the other has room;
-    previously a single LLM_PROVIDER choice was a hard single point of
-    failure. The fallback is only attempted if the OTHER provider's API key
-    is actually set — no point trying a provider with no key configured.
+    first, then AUTOMATICALLY falls back through the other configured
+    providers, in this fixed order after the preferred one:
+    gemini -> openai -> groq (minus whichever was already tried first).
+    This means a quota/billing problem on ANY ONE provider no longer takes
+    the whole pipeline down as long as another has room. The fallback to a
+    given provider is only attempted if that provider's API key is actually
+    set — no point trying one with no key configured.
 
     Raises only if every configured provider failed (or none are
     configured) — callers already treat a raised/None result as "skip this
@@ -152,6 +193,7 @@ def _call_llm(prompt: str, timeout: int = 20) -> str:
     providers = {
         "gemini": ("GEMINI_API_KEY", _call_gemini),
         "openai": ("OPENAI_API_KEY", _call_openai),
+        "groq": ("GROQ_API_KEY", _call_groq),
     }
     order = [preferred] + [name for name in providers if name != preferred]
 
@@ -174,7 +216,7 @@ def _call_llm(prompt: str, timeout: int = 20) -> str:
 
     if not attempted:
         raise RuntimeError(
-            "No LLM provider is configured — set GEMINI_API_KEY and/or OPENAI_API_KEY."
+            "No LLM provider is configured — set GEMINI_API_KEY, OPENAI_API_KEY, and/or GROQ_API_KEY."
         )
     raise RuntimeError(f"All configured LLM providers failed ({', '.join(attempted)}). Last error: {last_error}")
 
