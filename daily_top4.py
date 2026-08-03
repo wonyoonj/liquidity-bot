@@ -51,9 +51,10 @@ from __future__ import annotations
 
 import os
 import sys
+import random
 import traceback
 
-from lib.top4_fetcher import fetch_today_entries, us_today_label
+from lib.top4_fetcher import fetch_today_entries, us_today_label, macro_score
 from lib.top4_state import load_posted_ids, record_posted_many
 from lib.llm_content import pick_and_write_top4
 from lib.generate_card import create_top4_card
@@ -64,14 +65,25 @@ from lib.text_split import split_text_by_length, THREADS_CHAR_LIMIT
 
 NUMBER_EMOJI = ["1\ufe0f\u20e3", "2\ufe0f\u20e3", "3\ufe0f\u20e3", "4\ufe0f\u20e3"]  # 1️⃣ 2️⃣ 3️⃣ 4️⃣
 
+# Zero-cost fallback CTA pool — used only if the LLM call didn't return a
+# cta_question (e.g. older/odd response shape). No extra LLM call involved.
+_FALLBACK_CTAS = [
+    "Which of these do you think moves the market most?",
+    "Bullish or bearish on today's biggest story?",
+    "What's your read on today's top story?",
+]
 
-def _build_caption(items: list[dict], date_label: str) -> str:
-    lines = [f"[{date_label}] Top News", ""]
+
+def _build_caption(items: list[dict], date_label: str, cta_question: str | None = None) -> str:
+    lines = [f"[{date_label}] Top News \u2014 Macro & Liquidity Watch", ""]
     for emoji, item in zip(NUMBER_EMOJI, items):
-        lines.append(f"{emoji} {item['headline'].upper()}")
+        stars = "\u2605" * item.get("importance", 3)
+        lines.append(f"{emoji} {item['headline'].upper()}  {stars}")
         lines.append(f"\u2022 {item['bullet']}")
+        if item.get("why_it_matters"):
+            lines.append(f"\u21b3 Why it matters: {item['why_it_matters']}")
         lines.append("")
-    lines.append("Follow my account to receive the latest updates.")
+    lines.append(cta_question or random.choice(_FALLBACK_CTAS))
     return "\n".join(lines)
 
 
@@ -127,6 +139,13 @@ def main() -> int:
         fresh = [c for c in candidates if c["id"] not in already_posted]
         print(f"  -> {len(fresh)} remaining after removing already-covered stories")
 
+        # Brand-fit ordering (free, pure Python — no extra call): pushes
+        # USD-liquidity/macro-relevant stories to the front of the shortlist
+        # so the LLM sees the on-brand candidates first. This does NOT
+        # exclude anything — it only reorders, so an off-brand story is
+        # still picked by the LLM if nothing better exists that day.
+        fresh.sort(key=macro_score, reverse=True)
+
         if not fresh:
             print("No fresh candidates today — skipping silently "
                   "(this is expected behavior, not an error; see the "
@@ -150,6 +169,11 @@ def main() -> int:
         if len(items) < target_count:
             print(f"  -> only {len(items)} distinct, usable item(s) came back "
                   f"(asked for {target_count}) — posting with what's available.")
+        # Pulled off item[0] rather than changed as a separate return value,
+        # so pick_and_write_top4()'s return shape stays a plain list — see
+        # the note in lib/llm_content.py.
+        cta_question = items[0].pop("_cta_question", None)
+
         for i, it in enumerate(items, start=1):
             print(f"  -> {i}. {it['headline']}")
 
@@ -159,7 +183,7 @@ def main() -> int:
         card_path = create_top4_card(items, date_label=date_label)
 
         print("[4/4] Posting (no links — Reuters attribution only)...")
-        caption = _build_caption(items, date_label)
+        caption = _build_caption(items, date_label, cta_question=cta_question)
         telegram_caption = caption + "\n\n<i>Source: Reuters Business &amp; Finance</i>"
         send_photo(card_path, telegram_caption)
         _mirror_to_threads_no_link(caption, card_path)
