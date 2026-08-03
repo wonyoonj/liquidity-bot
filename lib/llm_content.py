@@ -353,6 +353,15 @@ def pick_and_write_news(candidates: list[dict]) -> dict | None:
 
 
 def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | None:
+    """Returns a list of item dicts, each carrying an extra `_cta_question`
+    key on item[0] only (see below) — kept this way instead of changing the
+    function's return type, so every existing caller that just iterates the
+    list of items keeps working unmodified.
+
+    NOTE: still exactly ONE LLM call (same as before) — the extra fields
+    below (why_it_matters / importance / cta_question) are requested in the
+    SAME prompt/response, not via a second call. This keeps GPT API cost
+    and call count unchanged."""
     if not candidates:
         return None
 
@@ -363,43 +372,58 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
         for i, c in enumerate(candidates)
     )
     item_schema = ", ".join(
-        ['{"selected_index": <int>, "headline": "...", "bullet": "..."}'] * count
+        ['{"selected_index": <int>, "headline": "...", "bullet": "...", '
+         '"why_it_matters": "...", "importance": <int 1-5>}'] * count
     )
     prompt = (
-        f"You are curating a daily \"Top {count} Financial Headlines\" summary post for a "
-        "social media account, based on today's Reuters Business & Finance headlines below "
-        "(short snippets only, not full articles).\n\n"
+        f"You are curating a daily \"Top {count} Financial Headlines\" summary for "
+        "@dollar_fluence, a social media account focused on USD liquidity, the Fed, "
+        "interest rates, Treasuries, stablecoins, and global macro markets. Below are "
+        "today's Reuters Business & Finance headlines (short snippets only, not full "
+        "articles) — use ONLY the title/snippet given, never invent facts.\n\n"
         f"{listing}\n\n"
         f"Step 1: Choose the {count} most significant and CLEARLY DISTINCT stories — avoid "
-        "picking two entries about the same underlying event. Prefer market-moving stories: "
-        "central bank / interest rate policy, major market/index moves, commodities, and "
-        "major corporate earnings, when present among the candidates.\n"
+        "picking two entries about the same underlying event. STRONGLY prefer stories "
+        "relevant to central bank policy, interest rates, USD liquidity, Treasury/bond "
+        "markets, major macro data (inflation, jobs, GDP), or major market-moving "
+        "corporate/economic news. Only include a non-macro story (politics, disasters, "
+        f"general corporate news) if fewer than {count} macro-relevant candidates exist.\n"
         "Step 2: For EACH pick, write, entirely in your OWN words (never copy phrasing from "
         "the snippet):\n"
         "  - \"headline\": a short, punchy, non-clickbait headline, under 65 characters "
         "(e.g. \"US Fed Announces Interest Rate Outlook\").\n"
         "  - \"bullet\": ONE short supporting-detail sentence, under 110 characters, plain "
-        "and factual — no hashtags, no emoji.\n\n"
+        "and factual — no hashtags, no emoji.\n"
+        "  - \"why_it_matters\": ONE sentence, under 110 characters, on why an "
+        "investor/macro-watcher should care — give a market/liquidity angle if the snippet "
+        "supports one. If the snippet gives no basis for a market angle, give the plainest "
+        "one-line reason a reader would care, without inventing specifics.\n"
+        "  - \"importance\": integer 1-5, how significant this is for markets (5 = highest).\n\n"
+        "Also write ONE \"cta_question\": a short question (under 90 characters) asking "
+        "readers which of these stories matters most to them — genuinely open-ended, "
+        "inviting replies, no hashtags, no emoji.\n\n"
         f"Respond with ONLY a JSON object, no markdown fences, no other text, exactly "
         f"{count} item(s):\n"
-        f'{{"items": [{item_schema}]}}'
+        f'{{"cta_question": "...", "items": [{item_schema}]}}'
     )
-    
+
     items = None
+    cta_question = None
     try:
         raw = _call_llm(prompt, timeout=30)
         clean_json = _extract_json_str(raw)
         data = json.loads(clean_json)
-        
+
         # ✅ 치명적 버그 수정: LLM이 "items" 키 없이 곧바로 리스트 [...] 를 반환하는 경우를 대응.
         # 또한, data.get()을 try-except 밖에서 호출하여 발생하는 AttributeError Crash 방지.
         if isinstance(data, list):
             items = data
         elif isinstance(data, dict):
             items = data.get("items")
+            cta_question = (data.get("cta_question") or "").strip() or None
         else:
             raise ValueError(f"Unexpected JSON root type: {type(data).__name__}")
-            
+
     except Exception as e:  # noqa: BLE001
         print(f"[llm_content] pick_and_write_top4 failed/unparseable: {e}")
         return None
@@ -415,6 +439,10 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
         idx = item.get("selected_index")
         headline = (item.get("headline") or "").strip()
         bullet = (item.get("bullet") or "").strip()
+        why_it_matters = (item.get("why_it_matters") or "").strip()
+        importance = item.get("importance")
+        if not isinstance(importance, int) or not (1 <= importance <= 5):
+            importance = 3  # neutral default if the LLM omits/mis-types it
         if not isinstance(idx, int) or idx < 0 or idx >= len(candidates):
             continue
         if idx in used_indices or not headline or not bullet:
@@ -426,6 +454,8 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
             "title": chosen["title"],
             "headline": headline,
             "bullet": bullet,
+            "why_it_matters": why_it_matters,
+            "importance": importance,
             "image_url": chosen.get("image_url"),
             "_article_link": chosen.get("link"),
         })
@@ -434,6 +464,11 @@ def pick_and_write_top4(candidates: list[dict], count: int = 4) -> list[dict] | 
 
     if not results:
         return None
+
+    # Tucked onto item[0] rather than changing the function's return shape,
+    # so daily_top4.py can read it without every other caller needing an
+    # update. Popped back out immediately in daily_top4.py.
+    results[0]["_cta_question"] = cta_question
     return results
 
 

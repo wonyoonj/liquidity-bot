@@ -154,6 +154,30 @@ def _parse_published(entry) -> Optional[datetime]:
     return None
 
 
+# --- Brand-fit scoring (dollar_fluence: USD liquidity / macro / Fed) -------
+# Pure keyword count over title+summary text we've already fetched — costs
+# NOTHING (no network call, no LLM call). Used purely to SORT candidates so
+# the shortlist handed to the LLM in pick_and_write_top4() is macro-biased
+# by default, instead of relying on the LLM alone to steer away from
+# off-brand stories (politics, disasters, generic corporate news).
+MACRO_KEYWORDS = (
+    "fed", "federal reserve", "interest rate", "rate cut", "rate hike",
+    "treasury", "bond yield", "yields", "inflation", "cpi", "gdp",
+    "jobs report", "unemployment", "dollar", "liquidity", "repo",
+    "stablecoin", "ecb", "boj", "yen", "yuan", "tariff", "central bank",
+    "ppi", "fomc", "powell", "recession", "quantitative",
+)
+
+
+def macro_score(entry: Dict) -> int:
+    """Higher = more relevant to the account's USD-liquidity/macro focus.
+    Used only for sort ordering, never for hard filtering — an off-brand
+    story with a score of 0 is still eligible if nothing better exists that
+    day (see daily_top4.py, which still asks the LLM to pick up to 4)."""
+    text = (entry.get("title", "") + " " + entry.get("summary", "")).lower()
+    return sum(1 for kw in MACRO_KEYWORDS if kw in text)
+
+
 def fetch_today_entries(max_entries: int = 25, fallback_hours: int = 36) -> List[Dict]:
     """Pulls the Reuters Business & Finance feed and returns entries
     published on TODAY's US/Eastern calendar date, newest first.

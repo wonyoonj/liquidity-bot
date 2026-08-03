@@ -642,12 +642,31 @@ TOP4_BG = (244, 240, 227)
 TOP4_TEXT = (27, 33, 28)
 TOP4_CIRCLE_LINE = (122, 132, 109)
 TOP4_MUTED = (110, 118, 102)
+TOP4_STAR = (184, 134, 11)          # matches AMBER_TX, used for importance stars
+TOP4_TAG_BG = LIGHTBLUE
+TOP4_TAG_TX = BLUE
+
+# Same free keyword approach as lib/top4_fetcher.py's macro_score — reused
+# here only to LABEL each card item with a category pill, not to call any
+# API. Kept as its own small copy (no cross-import from top4_fetcher) so
+# generate_card.py has no dependency on the fetcher module.
+_MACRO_TAG_KEYWORDS = (
+    "fed", "rate", "treasury", "yield", "inflation", "cpi", "gdp",
+    "dollar", "liquidity", "repo", "stablecoin", "central bank", "tariff",
+)
+
+
+def _category_tag(item: Dict) -> str:
+    text = (item.get("headline", "") + " " + item.get("bullet", "")).lower()
+    if any(kw in text for kw in _MACRO_TAG_KEYWORDS):
+        return "MACRO"
+    return "MARKETS"
 
 
 def create_top4_card(
     items: List[Dict],
     date_label: str,
-    title: str = "FINANCIAL SUMMARY",
+    title: str = "MACRO & LIQUIDITY WATCH",
     footer_line1: str = "FOLLOW OUR ACCOUNT TO RECEIVE",
     footer_line2: str = "DAILY TOP NEWS UPDATES",
     out_path: str = "output/top4_card.png",
@@ -663,6 +682,9 @@ def create_top4_card(
     f_num = _font(26, "Regular")
     f_headline = _font(46, "ExtraBold")
     f_bullet = _font(28, "Regular")
+    f_impact = _font(26, "Medium")
+    f_tag = _font(20, "Bold")
+    f_star = _font(24, "Regular")
     f_footer = _font(25, "Bold")
 
     title_w = d.textlength(title, font=f_title)
@@ -691,9 +713,22 @@ def create_top4_card(
         d.text((circle_x + circle_d / 2 - nw / 2, y + circle_d / 2 - nh / 2 - nb[1]),
                num_text, font=f_num, fill=TOP4_CIRCLE_LINE)
 
+        # Category pill + importance stars, above the headline — gives the
+        # card a consistent, at-a-glance identity/priority signal even when
+        # the 4 underlying stories are otherwise unrelated events.
+        ty = y
+        tag_text = _category_tag(item)
+        tag_w = d.textlength(tag_text, font=f_tag) + 26
+        d.rounded_rectangle([text_left, ty, text_left + tag_w, ty + 34],
+                             radius=17, fill=TOP4_TAG_BG)
+        d.text((text_left + 13, ty + 6), tag_text, font=f_tag, fill=TOP4_TAG_TX)
+
+        stars = "\u2605" * max(1, min(5, item.get("importance", 3)))
+        d.text((text_left + tag_w + 16, ty + 3), stars, font=f_star, fill=TOP4_STAR)
+        ty += 48
+
         headline_text = f"{i}. {item['headline']}"
         headline_lines = _wrap_text(d, headline_text, f_headline, text_max_w)
-        ty = y
         for line in headline_lines:
             d.text((text_left, ty), line, font=f_headline, fill=TOP4_TEXT)
             ty += line_h
@@ -705,6 +740,14 @@ def create_top4_card(
                 d.text((text_left, ty), line, font=f_bullet, fill=TOP4_MUTED)
                 ty += bullet_line_h
             ty += 8
+
+        why_it_matters = item.get("why_it_matters")
+        if why_it_matters:
+            impact_lines = _wrap_text(d, "\u2191 " + why_it_matters, f_impact, text_max_w)
+            for line in impact_lines:
+                d.text((text_left, ty), line, font=f_impact, fill=TOP4_TAG_TX)
+                ty += bullet_line_h + 4
+            ty += 4
 
         y = max(block_top + circle_d, ty) + 44
 
